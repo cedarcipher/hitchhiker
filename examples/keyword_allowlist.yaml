@@ -1,0 +1,23 @@
+# Example: keyword allowlist
+#
+# The bot reacts to any message that matches a word in the Allowlist table.
+# The emoji column in the table controls which emoji is used.
+#
+# Grist table "Allowlist":
+#   word (text)   | emoji (text)
+#   ------------- | -----------
+#   hello         | 👋
+#   thanks        | ❤️
+#   help          | 🆘
+
+rules:
+  - name: keyword_check
+    match:
+      any: true
+    query:
+      table: Allowlist
+      select: [emoji]
+      where:
+        word: "{message}"
+    react:
+      column: emoji

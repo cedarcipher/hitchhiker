@@ -1,0 +1,23 @@
+# Replace with your actual domain.
+# Caddy automatically provisions TLS via Let's Encrypt.
+#
+# To use: cp Caddyfile.example Caddyfile, edit the domain, then:
+#   docker compose --profile caddy up -d
+grist.yourdomain.com {
+    reverse_proxy grist:8484
+
+    # Disable access logs (consistent with no-audit-log policy)
+    log {
+        output discard
+    }
+}
+
+# Dex OIDC provider — required for Grist login to work from the browser.
+# The browser must be able to reach Dex during the OIDC login flow.
+dex.yourdomain.com {
+    reverse_proxy dex:5556
+
+    log {
+        output discard
+    }
+}

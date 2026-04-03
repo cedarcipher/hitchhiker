@@ -1,0 +1,29 @@
+# Example: order status lookup
+#
+# Send "order 12345" to the bot. It queries the Orders table and reacts
+# with an emoji based on the status column value.
+
+tables:
+  Orders:
+    columns:
+      order_id: text
+      status: text
+
+rules:
+  - name: order_lookup
+    match:
+      prefix: "order "
+    query:
+      table: Orders
+      select: [status]
+      where:
+        order_id: "{input}"
+    react:
+      map:
+        column: status
+        values:
+          shipped: "\U0001F4E6"    # 📦
+          delivered: "\u2705"       # ✅
+          cancelled: "\u274C"       # ❌
+        default: "\u23F3"          # ⏳
+      empty: "\u2753"              # ❓

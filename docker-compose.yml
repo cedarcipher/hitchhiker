@@ -1,0 +1,139 @@
+services:
+  # Signal CLI REST API — bridge between the bot and Signal servers
+  signal-api:
+    image: bbernhard/signal-cli-rest-api:latest
+    environment:
+      - MODE=json-rpc
+      - JSON_RPC_TRUST_NEW_IDENTITIES=on-first-use
+    ports:
+      # Bind to localhost only — not exposed to the internet.
+      # Use an SSH tunnel for initial QR code linking from a remote VPS:
+      #   ssh -L 8090:127.0.0.1:8090 user@vps
+      - "127.0.0.1:8090:8080"
+    volumes:
+      - signal-data:/home/.local/share/signal-cli
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: none
+
+  # Dex — lightweight OIDC identity provider for Grist admin login
+  dex:
+    image: dexidp/dex:latest
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    volumes:
+      - ./dex-config.yaml:/etc/dex/config.yaml:ro
+    ports:
+      - "127.0.0.1:5556:5556"
+    restart: unless-stopped
+    logging:
+      driver: none
+
+  # Grist — spreadsheet database with REST API and SQL endpoint
+  grist:
+    image: gristlabs/grist:latest
+    environment:
+      - GRIST_HOST=0.0.0.0
+      # Privacy — disable all telemetry and force login
+      - GRIST_TELEMETRY_LEVEL=off
+      - GRIST_FORCE_LOGIN=true
+      # OIDC authentication via Dex.
+      # If using Caddy with a public domain, change to https://yourdomain.com
+      # and update the redirectURIs in dex-config.yaml to match.
+      - GRIST_OIDC_SP_HOST=${GRIST_OIDC_SP_HOST:-http://localhost:8484}
+      - GRIST_OIDC_IDP_ISSUER=${GRIST_OIDC_IDP_ISSUER:-https://localhost:5556/dex}
+      - GRIST_OIDC_IDP_CLIENT_ID=grist
+      - GRIST_OIDC_IDP_SKIP_END_SESSION_ENDPOINT=true
+    env_file:
+      - .env    # supplies GRIST_OIDC_IDP_CLIENT_SECRET and GRIST_SESSION_SECRET
+    volumes:
+      - grist-data:/persist
+    ports:
+      # Bind to localhost only — use SSH tunnel for remote admin access:
+      #   ssh -L 8484:127.0.0.1:8484 user@vps
+      - "127.0.0.1:8484:8484"
+    depends_on:
+      - dex
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8484/api/orgs"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: none
+
+  # Python Signal bot
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      # Override service URLs to use Docker network hostnames
+      - SIGNAL_SERVICE_URL=signal-api:8080
+      - GRIST_API_URL=http://grist:8484
+      # Path to the user-provided strategy inside the container.
+      # Change to /app/strategy.py if using a Python strategy instead.
+      - STRATEGY_PATH=/app/strategy.yaml
+    volumes:
+      # Mount the user's strategy file into the container.
+      # Use strategy.yaml (declarative) or strategy.py (imperative).
+      - ./strategy.yaml:/app/strategy.yaml:ro
+      # Uncomment the line below to use a Python strategy instead:
+      # - ./strategy.py:/app/strategy.py:ro
+    depends_on:
+      signal-api:
+        condition: service_healthy
+      grist:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: none
+
+  # Caddy — optional TLS reverse proxy for public Grist access.
+  # Not needed if you access Grist via SSH tunnel or already have a reverse proxy.
+  # To enable: cp Caddyfile.example Caddyfile, edit the domain, then:
+  #   docker compose --profile caddy up -d
+  caddy:
+    image: caddy:2
+    ports:
+      - "${CADDY_HTTPS_PORT:-443}:443"
+      - "${CADDY_HTTP_PORT:-80}:80"      # for ACME HTTP challenge
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - grist
+      - dex
+    restart: unless-stopped
+    profiles:
+      - caddy
+    logging:
+      driver: none
+
+# Both volumes are stored on a LUKS-encrypted mount (see README "Encrypted Storage").
+# The encrypted volume must be unlocked and mounted BEFORE running docker compose.
+# If the mount point does not exist, docker compose will fail — this is intentional
+# to prevent running the stack without encryption.
+volumes:
+  signal-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HITCHHIKER_ENCRYPTED_MOUNT:-/mnt/hitchhiker}/signal
+  grist-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HITCHHIKER_ENCRYPTED_MOUNT:-/mnt/hitchhiker}/grist
+  caddy-data:

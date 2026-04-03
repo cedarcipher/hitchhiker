@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.13'
+    - name: Install dependencies
+      run: pip install '.[test]'
+    - name: Build Docker image
+      run: docker build -t hitchhiker .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.13'
+    - name: Install dependencies
+      run: pip install '.[test]'
+    - name: Run tests
+      run: pytest tests/ --ignore=tests/e2e -v
+    - name: Test encrypted storage scripts
+      run: ./tests/test_encrypted_storage_scripts.sh

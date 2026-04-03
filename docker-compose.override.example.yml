@@ -1,0 +1,24 @@
+# DEV ONLY — bypasses LUKS encryption for local development.
+# Do NOT use in production. See README "Encrypted Storage" for the production setup.
+#
+# Usage:
+#   1. Add "127.0.0.1 dex" to /etc/hosts (one-time setup)
+#   2. cp docker-compose.override.example.yml docker-compose.override.yml
+#   3. docker compose up -d --build
+#
+# This replaces the LUKS-encrypted bind mounts with plain Docker named volumes
+# and exposes Dex on localhost so the OIDC login flow works from the browser.
+# The /etc/hosts entry lets your browser resolve "dex" to localhost, matching
+# the Docker-internal hostname that Grist uses.
+
+volumes:
+  signal-data:
+    driver_opts:
+      type: ""
+      o: ""
+      device: ""
+  grist-data:
+    driver_opts:
+      type: ""
+      o: ""
+      device: ""

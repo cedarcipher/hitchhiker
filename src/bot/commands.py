@@ -1,0 +1,125 @@
+"""Signal command handler — wires the strategy to the message loop."""
+
+import logging
+import time
+
+from signalbot import Command, Context
+
+from bot.db import GristClient
+
+logger = logging.getLogger(__name__)
+
+
+class RateLimiter:
+    """In-memory per-sender sliding window rate limiter.
+
+    Tracks message timestamps by sender UUID. A sender is rate-limited when
+    they exceed ``max_messages`` within a rolling ``window_seconds`` period.
+
+    Privacy: only UUIDs are stored in memory — never phone numbers, display
+    names, or message content. Old entries are pruned on every check.
+    """
+
+    def __init__(self, max_messages: int, window_seconds: int) -> None:
+        self.max_messages = max_messages
+        self.window_seconds = window_seconds
+        self._timestamps: dict[str, list[float]] = {}
+
+    def is_allowed(self, sender_uuid: str) -> bool:
+        """Return True if the sender is within their rate limit."""
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+
+        # Get or create timestamp list, prune expired entries
+        timestamps = self._timestamps.get(sender_uuid, [])
+        timestamps = [t for t in timestamps if t > cutoff]
+
+        if len(timestamps) >= self.max_messages:
+            self._timestamps[sender_uuid] = timestamps
+            return False
+
+        timestamps.append(now)
+        self._timestamps[sender_uuid] = timestamps
+        return True
+
+
+class ReactCommand(Command):
+    """Process every incoming message through the strategy pipeline."""
+
+    def __init__(
+        self,
+        db: GristClient,
+        strategy,
+        bot_uuid: str,
+        rate_limiter: RateLimiter | None = None,
+    ) -> None:
+        super().__init__()
+        self.db = db
+        self.strategy = strategy
+        self.bot_uuid = bot_uuid
+        self.rate_limiter = rate_limiter
+
+    def _is_mentioned(self, c: Context) -> bool:
+        """Check if the bot is @-mentioned in the message.
+
+        Tries structured mention data first (uuid match), then falls back to
+        detecting the U+FFFC object replacement character that Signal inserts
+        at mention positions — signal-cli-rest-api doesn't always include the
+        mentions array in received messages.
+        """
+        for m in c.message.mentions:
+            if isinstance(m, dict) and m.get("uuid") == self.bot_uuid:
+                return True
+        # Fallback: Signal inserts U+FFFC at each mention position.
+        # If the message contains it, assume the bot was mentioned.
+        # This works around a known signal-cli bug where mention metadata is
+        # missing from received messages — fixed in signal-cli but not yet
+        # ported to signal-cli-rest-api. Remove this fallback once the fix
+        # lands upstream.
+        # Only use fallback when no structured mentions exist at all;
+        # if mentions are present but none match the bot, the bot was
+        # genuinely not mentioned.
+        if not c.message.mentions and c.message.text and "\uFFFC" in c.message.text:
+            return True
+        return False
+
+    async def handle(self, c: Context) -> None:
+        text = c.message.text
+        if not text:
+            return
+
+        # In group chats, only respond when the bot is @-mentioned
+        if c.message.group and not self._is_mentioned(c):
+            return
+
+        # Per-sender rate limiting (by UUID — never logs who was limited)
+        if self.rate_limiter and not self.rate_limiter.is_allowed(
+            c.message.source_uuid
+        ):
+            return
+
+        # Strip the Unicode Object Replacement Character (U+FFFC) that
+        # Signal inserts at each mention position, then clean up whitespace.
+        text = text.replace("\uFFFC", "").strip()
+        if not text:
+            return
+
+        # 1. Ask the strategy what to query
+        sql, args = self.strategy.query(text)
+
+        # 2. Execute the query against Grist (if any)
+        rows = []
+        if sql:
+            try:
+                rows = await self.db.execute(sql, args)
+            except Exception:
+                logger.warning("Grist query failed (details suppressed)")
+                return
+
+        # 3. Ask the strategy how to react
+        emoji = self.strategy.react(text, rows)
+        if emoji is None:
+            return  # strategy chose not to react
+
+        # 4. React on the original message
+        await c.react(emoji)

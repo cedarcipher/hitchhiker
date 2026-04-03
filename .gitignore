@@ -1,0 +1,38 @@
+# Secrets and credentials — NEVER commit these
+.env
+dex-config.yaml
+
+# Encrypted volume image (LUKS) — contains Signal keys and Grist data
+hitchhiker.img
+
+# Dev override — bypasses LUKS encryption (see docker-compose.override.example.yml)
+docker-compose.override.yml
+
+# User-provided strategy (domain-specific, may contain sensitive logic)
+strategy.yaml
+strategy.py
+
+# Caddy config (deployment-specific, contains domain name)
+Caddyfile
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
