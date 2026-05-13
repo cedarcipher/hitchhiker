@@ -1091,7 +1091,7 @@ class TestRespondTemplating:
 
 
 class TestRespondEmpty:
-    def test_empty_rows_uses_empty_template(self):
+    def test_empty_rows_uses_empty_temitem(self):
         s = make_strategy(
             [
                 {
@@ -1111,7 +1111,7 @@ class TestRespondEmpty:
         )
         assert s.respond("order 42", []) == ("Order 42 not found.", True)
 
-    def test_empty_rows_no_empty_template_returns_none(self):
+    def test_empty_rows_no_empty_temitem_returns_none(self):
         s = make_strategy(
             [
                 {
@@ -1128,7 +1128,7 @@ class TestRespondEmpty:
         )
         assert s.respond("order 42", []) is None
 
-    def test_empty_template_respects_quote_flag(self):
+    def test_empty_temitem_respects_quote_flag(self):
         s = make_strategy(
             [
                 {
@@ -1280,6 +1280,401 @@ class TestRespondValidation:
                         "empty": "no",
                         "quote": False,
                     },
+                }
+            ]
+        )
+
+
+class TestFuzzyQuery:
+    def _strategy(self):
+        return make_strategy(
+            [
+                {
+                    "name": "inventory",
+                    "match": {"prefix": "sku "},
+                    "query": {
+                        "table": "Inventory",
+                        "select": ["SKU"],
+                        "where": {"SKU": "{input}"},
+                    },
+                    "fuzzy": {
+                        "column": "SKU",
+                        "threshold": 80,
+                        "limit": 3,
+                        "respond": {
+                            "text": "Did you mean:\n{candidates}",
+                            "item": "{SKU} ({score}%)",
+                        },
+                    },
+                    "react": {"emoji": "✅"},
+                }
+            ]
+        )
+
+    def test_returns_select_star_for_matched_rule_table(self):
+        s = self._strategy()
+        sql, args, cfg = s.fuzzy_query("sku ABC")
+        assert sql == "SELECT * FROM Inventory"
+        assert args == []
+        assert cfg["column"] == "SKU"
+        assert cfg["threshold"] == 80
+        assert cfg["limit"] == 3
+
+    def test_returns_none_when_rule_has_no_fuzzy_block(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "t",
+                    "match": {"prefix": "sku "},
+                    "query": {
+                        "table": "Inventory",
+                        "select": ["SKU"],
+                        "where": {"SKU": "{input}"},
+                    },
+                    "react": {"emoji": "✅"},
+                }
+            ]
+        )
+        assert s.fuzzy_query("sku ABC") is None
+
+    def test_returns_none_when_no_rule_matches(self):
+        s = self._strategy()
+        assert s.fuzzy_query("hello") is None
+
+
+class TestReactFuzzy:
+    def _strategy(self, react_def=None):
+        rule = {
+            "name": "inventory",
+            "match": {"prefix": "sku "},
+            "query": {
+                "table": "Inventory",
+                "select": ["SKU"],
+                "where": {"SKU": "{input}"},
+            },
+            "fuzzy": {
+                "column": "SKU",
+                "respond": {
+                    "text": "Did you mean:\n{candidates}",
+                    "item": "{SKU}",
+                },
+            },
+            "react": {"emoji": "✅"},
+        }
+        if react_def is not None:
+            rule["fuzzy"]["react"] = react_def
+        return make_strategy([rule])
+
+    def test_returns_configured_emoji(self):
+        s = self._strategy(react_def={"emoji": "🤔"})
+        assert s.react_fuzzy("sku ABC", [{"SKU": "ABC-123", "score": 85}]) == "🤔"
+
+    def test_returns_none_when_no_fuzzy_react(self):
+        s = self._strategy()  # no fuzzy.react
+        assert s.react_fuzzy("sku ABC", [{"SKU": "ABC-123", "score": 85}]) is None
+
+    def test_returns_none_when_no_rule_matches(self):
+        s = self._strategy(react_def={"emoji": "🤔"})
+        assert s.react_fuzzy("hello", []) is None
+
+
+class TestRespondFuzzy:
+    def _strategy(self, respond_def=None, item="{SKU} ({score}%)", separator=None, quote=None):
+        rule = {
+            "name": "inventory",
+            "match": {"prefix": "sku "},
+            "query": {
+                "table": "Inventory",
+                "select": ["SKU"],
+                "where": {"SKU": "{input}"},
+            },
+            "fuzzy": {
+                "column": "SKU",
+                "respond": respond_def
+                or {
+                    "text": "Did you mean:\n{candidates}",
+                    "item": item,
+                },
+            },
+            "react": {"emoji": "✅"},
+        }
+        if separator is not None:
+            rule["fuzzy"]["respond"]["separator"] = separator
+        if quote is not None:
+            rule["fuzzy"]["respond"]["quote"] = quote
+        return make_strategy([rule])
+
+    def test_renders_single_item(self):
+        s = self._strategy()
+        rows = [{"SKU": "ABC-123", "score": 87}]
+        assert s.respond_fuzzy("sku ABX", rows) == (
+            "Did you mean:\nABC-123 (87%)",
+            True,
+        )
+
+    def test_renders_multiple_items_default_separator(self):
+        s = self._strategy()
+        rows = [
+            {"SKU": "ABC-123", "score": 87},
+            {"SKU": "ABD-122", "score": 82},
+        ]
+        assert s.respond_fuzzy("sku ABX", rows) == (
+            "Did you mean:\nABC-123 (87%)\nABD-122 (82%)",
+            True,
+        )
+
+    def test_renders_with_custom_separator(self):
+        s = self._strategy(separator=" | ")
+        rows = [
+            {"SKU": "ABC-123", "score": 87},
+            {"SKU": "ABD-122", "score": 82},
+        ]
+        assert s.respond_fuzzy("sku ABX", rows)[0] == (
+            "Did you mean:\nABC-123 (87%) | ABD-122 (82%)"
+        )
+
+    def test_interpolates_match_vars_in_text_and_item(self):
+        s = self._strategy(
+            respond_def={
+                "text": "Closest to {input}:\n{candidates}",
+                "item": "{SKU} for {input}",
+            }
+        )
+        rows = [{"SKU": "ABC-123", "score": 90}]
+        assert s.respond_fuzzy("sku XYZ", rows) == (
+            "Closest to XYZ:\nABC-123 for XYZ",
+            True,
+        )
+
+    def test_quote_false_passes_through(self):
+        s = self._strategy(quote=False)
+        rows = [{"SKU": "ABC-123", "score": 87}]
+        _text, quote = s.respond_fuzzy("sku ABX", rows)
+        assert quote is False
+
+    def test_returns_none_when_no_rule_matches(self):
+        s = self._strategy()
+        assert s.respond_fuzzy("hello", [{"SKU": "X", "score": 0}]) is None
+
+    def test_returns_none_when_fuzzy_rows_empty(self):
+        s = self._strategy()
+        assert s.respond_fuzzy("sku ABX", []) is None
+
+    def test_whitespace_rendered_text_returns_none(self):
+        s = self._strategy(
+            respond_def={"text": "{candidates}", "item": "   "}
+        )
+        rows = [{"SKU": "X", "score": 0}]
+        assert s.respond_fuzzy("sku ABX", rows) is None
+
+
+class TestFuzzyValidation:
+    def _rule_with_fuzzy(self, fuzzy_def):
+        return {
+            "name": "t",
+            "match": {"prefix": "sku "},
+            "query": {
+                "table": "Inventory",
+                "select": ["SKU"],
+                "where": {"SKU": "{input}"},
+            },
+            "fuzzy": fuzzy_def,
+            "react": {"emoji": "✅"},
+        }
+
+    def _valid_respond(self):
+        return {
+            "text": "Did you mean:\n{candidates}",
+            "item": "{SKU}",
+        }
+
+    def test_rejects_non_dict_fuzzy(self):
+        with pytest.raises(ValueError, match="fuzzy must be a dict"):
+            make_strategy([self._rule_with_fuzzy("not a dict")])
+
+    def test_rejects_missing_column(self):
+        with pytest.raises(ValueError, match="fuzzy.column is required"):
+            make_strategy([self._rule_with_fuzzy({"respond": self._valid_respond()})])
+
+    def test_rejects_non_string_column(self):
+        with pytest.raises(ValueError, match="fuzzy.column must be a string"):
+            make_strategy(
+                [self._rule_with_fuzzy({"column": 42, "respond": self._valid_respond()})]
+            )
+
+    def test_rejects_fuzzy_without_query_table(self):
+        rule = {
+            "name": "t",
+            "match": {"any": True},
+            "fuzzy": {"column": "SKU", "respond": self._valid_respond()},
+            "react": {"emoji": "✅"},
+        }
+        with pytest.raises(ValueError, match="fuzzy requires the rule to define query.table"):
+            make_strategy([rule])
+
+    def test_rejects_bad_threshold(self):
+        with pytest.raises(ValueError, match="fuzzy.threshold must be an int between 0 and 100"):
+            make_strategy(
+                [
+                    self._rule_with_fuzzy(
+                        {
+                            "column": "SKU",
+                            "threshold": 150,
+                            "respond": self._valid_respond(),
+                        }
+                    )
+                ]
+            )
+
+    def test_rejects_bad_limit(self):
+        with pytest.raises(ValueError, match="fuzzy.limit must be an int between 1 and 3"):
+            make_strategy(
+                [
+                    self._rule_with_fuzzy(
+                        {
+                            "column": "SKU",
+                            "limit": 5,
+                            "respond": self._valid_respond(),
+                        }
+                    )
+                ]
+            )
+
+    def test_rejects_zero_limit(self):
+        with pytest.raises(ValueError, match="fuzzy.limit must be an int between 1 and 3"):
+            make_strategy(
+                [
+                    self._rule_with_fuzzy(
+                        {
+                            "column": "SKU",
+                            "limit": 0,
+                            "respond": self._valid_respond(),
+                        }
+                    )
+                ]
+            )
+
+    def test_rejects_missing_respond(self):
+        with pytest.raises(ValueError, match="fuzzy.respond is required"):
+            make_strategy([self._rule_with_fuzzy({"column": "SKU"})])
+
+    def test_rejects_missing_respond_text(self):
+        with pytest.raises(ValueError, match="fuzzy.respond.text must be a non-empty string"):
+            make_strategy(
+                [
+                    self._rule_with_fuzzy(
+                        {"column": "SKU", "respond": {"item": "{SKU}"}}
+                    )
+                ]
+            )
+
+    def test_rejects_missing_respond_item(self):
+        with pytest.raises(ValueError, match="fuzzy.respond.item must be a non-empty string"):
+            make_strategy(
+                [
+                    self._rule_with_fuzzy(
+                        {
+                            "column": "SKU",
+                            "respond": {"text": "{candidates}"},
+                        }
+                    )
+                ]
+            )
+
+    def test_rejects_text_without_candidates_placeholder(self):
+        with pytest.raises(ValueError, match=r"fuzzy.respond.text must reference \{candidates\}"):
+            make_strategy(
+                [
+                    self._rule_with_fuzzy(
+                        {
+                            "column": "SKU",
+                            "respond": {"text": "no placeholder", "item": "{SKU}"},
+                        }
+                    )
+                ]
+            )
+
+    def test_rejects_bad_react(self):
+        with pytest.raises(ValueError, match="fuzzy.react must be a dict with an emoji key"):
+            make_strategy(
+                [
+                    self._rule_with_fuzzy(
+                        {
+                            "column": "SKU",
+                            "react": "🤔",
+                            "respond": self._valid_respond(),
+                        }
+                    )
+                ]
+            )
+
+    def test_rejects_unknown_top_level_key(self):
+        with pytest.raises(ValueError, match="fuzzy has unknown key 'foo'"):
+            make_strategy(
+                [
+                    self._rule_with_fuzzy(
+                        {
+                            "column": "SKU",
+                            "respond": self._valid_respond(),
+                            "foo": 1,
+                        }
+                    )
+                ]
+            )
+
+    def test_rejects_unknown_respond_key(self):
+        with pytest.raises(ValueError, match="fuzzy.respond has unknown key 'bar'"):
+            make_strategy(
+                [
+                    self._rule_with_fuzzy(
+                        {
+                            "column": "SKU",
+                            "respond": {
+                                "text": "{candidates}",
+                                "item": "x",
+                                "bar": 1,
+                            },
+                        }
+                    )
+                ]
+            )
+
+    def test_accepts_valid_minimal_fuzzy(self):
+        make_strategy(
+            [
+                self._rule_with_fuzzy(
+                    {"column": "SKU", "respond": self._valid_respond()}
+                )
+            ]
+        )
+
+    def test_accepts_valid_full_fuzzy(self):
+        make_strategy(
+            [
+                self._rule_with_fuzzy(
+                    {
+                        "column": "SKU",
+                        "threshold": 80,
+                        "limit": 3,
+                        "react": {"emoji": "🤔"},
+                        "respond": {
+                            "text": "Did you mean:\n{candidates}",
+                            "item": "{SKU} ({score}%)",
+                            "separator": "\n  ",
+                            "quote": False,
+                        },
+                    }
+                )
+            ]
+        )
+
+    def test_accepts_rule_without_fuzzy(self):
+        make_strategy(
+            [
+                {
+                    "name": "t",
+                    "match": {"any": True},
+                    "react": {"emoji": "✅"},
                 }
             ]
         )

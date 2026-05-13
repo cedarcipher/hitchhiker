@@ -11,6 +11,8 @@ class YamlStrategy:
     _LEAF_KEYS = ("prefix", "suffix", "exact", "contains", "regex", "any")
     _MATCH_KEYS = ("any_of", "all_of") + _LEAF_KEYS
     _RESPOND_KEYS = ("text", "empty", "quote")
+    _FUZZY_KEYS = ("column", "threshold", "limit", "react", "respond")
+    _FUZZY_RESPOND_KEYS = ("text", "item", "separator", "quote")
 
     def __init__(self, config: dict) -> None:
         self.rules = config.get("rules", [])
@@ -18,6 +20,7 @@ class YamlStrategy:
         for rule in self.rules:
             self._validate_match(rule.get("match", {}))
             self._validate_respond(rule.get("respond"))
+            self._validate_fuzzy(rule.get("fuzzy"), rule)
 
     @classmethod
     def _validate_match(cls, match_def: dict) -> None:
@@ -53,6 +56,60 @@ class YamlStrategy:
         for key in respond_def:
             if key not in cls._RESPOND_KEYS:
                 raise ValueError(f"respond has unknown key '{key}'")
+
+    @classmethod
+    def _validate_fuzzy(cls, fuzzy_def, rule: dict) -> None:
+        if fuzzy_def is None:
+            return
+        if not isinstance(fuzzy_def, dict):
+            raise ValueError("fuzzy must be a dict")
+        if "column" not in fuzzy_def:
+            raise ValueError("fuzzy.column is required")
+        if not isinstance(fuzzy_def["column"], str):
+            raise ValueError("fuzzy.column must be a string")
+        query_def = rule.get("query") or {}
+        if "table" not in query_def:
+            raise ValueError("fuzzy requires the rule to define query.table")
+        if "threshold" in fuzzy_def:
+            t = fuzzy_def["threshold"]
+            if not isinstance(t, int) or isinstance(t, bool) or not 0 <= t <= 100:
+                raise ValueError(
+                    "fuzzy.threshold must be an int between 0 and 100"
+                )
+        if "limit" in fuzzy_def:
+            lim = fuzzy_def["limit"]
+            if not isinstance(lim, int) or isinstance(lim, bool) or not 1 <= lim <= 3:
+                raise ValueError(
+                    "fuzzy.limit must be an int between 1 and 3"
+                )
+        if "respond" not in fuzzy_def:
+            raise ValueError("fuzzy.respond is required")
+        respond_def = fuzzy_def["respond"]
+        if not isinstance(respond_def, dict):
+            raise ValueError("fuzzy.respond must be a dict")
+        text = respond_def.get("text")
+        if not isinstance(text, str) or not text:
+            raise ValueError("fuzzy.respond.text must be a non-empty string")
+        item = respond_def.get("item")
+        if not isinstance(item, str) or not item:
+            raise ValueError("fuzzy.respond.item must be a non-empty string")
+        if "{candidates}" not in text:
+            raise ValueError("fuzzy.respond.text must reference {candidates}")
+        if "react" in fuzzy_def:
+            react_def = fuzzy_def["react"]
+            if not (
+                isinstance(react_def, dict)
+                and isinstance(react_def.get("emoji"), str)
+            ):
+                raise ValueError(
+                    "fuzzy.react must be a dict with an emoji key"
+                )
+        for key in fuzzy_def:
+            if key not in cls._FUZZY_KEYS:
+                raise ValueError(f"fuzzy has unknown key '{key}'")
+        for key in respond_def:
+            if key not in cls._FUZZY_RESPOND_KEYS:
+                raise ValueError(f"fuzzy.respond has unknown key '{key}'")
 
     @classmethod
     def from_file(cls, path: str) -> "YamlStrategy":
@@ -120,6 +177,67 @@ class YamlStrategy:
                 return None
             return (rendered, quote)
 
+        return None
+
+    def fuzzy_query(
+        self, message_text: str
+    ) -> tuple[str, list, dict] | None:
+        """Return (sql, args, fuzzy_cfg) for the candidate-pool query, or
+        None if the matched rule has no fuzzy: block."""
+        text = message_text.strip()
+        for rule in self.rules:
+            if self._match(rule.get("match", {}), text) is None:
+                continue
+            fuzzy_def = rule.get("fuzzy")
+            if not fuzzy_def:
+                return None
+            table = rule["query"]["table"]
+            return (f"SELECT * FROM {table}", [], fuzzy_def)
+        return None
+
+    def react_fuzzy(
+        self, message_text: str, fuzzy_rows: list[dict]
+    ) -> str | None:
+        """Return emoji for the fuzzy branch, or None."""
+        text = message_text.strip()
+        for rule in self.rules:
+            if self._match(rule.get("match", {}), text) is None:
+                continue
+            fuzzy_def = rule.get("fuzzy") or {}
+            react_def = fuzzy_def.get("react") or {}
+            return react_def.get("emoji")
+        return None
+
+    def respond_fuzzy(
+        self, message_text: str, fuzzy_rows: list[dict]
+    ) -> tuple[str, bool] | None:
+        """Render fuzzy.respond. Returns (text, quote) or None."""
+        if not fuzzy_rows:
+            return None
+        text = message_text.strip()
+        for rule in self.rules:
+            variables = self._match(rule.get("match", {}), text)
+            if variables is None:
+                continue
+            fuzzy_def = rule.get("fuzzy") or {}
+            respond_def = fuzzy_def.get("respond")
+            if not respond_def:
+                return None
+            item_tmpl = respond_def["item"]
+            separator = respond_def.get("separator", "\n")
+            quote = respond_def.get("quote", True)
+
+            rendered_items = [
+                self._interpolate(item_tmpl, {**variables, **row})
+                for row in fuzzy_rows
+            ]
+            candidates = separator.join(rendered_items)
+            text_vars = {**variables, "candidates": candidates}
+            rendered = self._interpolate(respond_def["text"], text_vars)
+
+            if not rendered.strip():
+                return None
+            return (rendered, quote)
         return None
 
     # --- Match engine ---
