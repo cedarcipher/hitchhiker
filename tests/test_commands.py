@@ -1,6 +1,5 @@
 """Tests for the ReactCommand handler with mocked dependencies."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -57,7 +56,7 @@ def make_db(rows=None):
 
 
 class TestReactCommand:
-    def test_reacts_with_emoji(self):
+    async def test_reacts_with_emoji(self):
         db = make_db(rows=[{"status": "shipped"}])
         strategy = FakeStrategy(
             sql="SELECT status FROM T WHERE id = ?",
@@ -67,55 +66,55 @@ class TestReactCommand:
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("order 123")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         db.execute.assert_awaited_once_with(
             "SELECT status FROM T WHERE id = ?", ["123"]
         )
         ctx.react.assert_awaited_once_with("📦")
 
-    def test_no_query_still_reacts(self):
+    async def test_no_query_still_reacts(self):
         db = make_db()
         strategy = FakeStrategy(sql="", args=[], emoji="🏓")
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("ping")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         db.execute.assert_not_awaited()
         ctx.react.assert_awaited_once_with("🏓")
 
-    def test_no_emoji_skips_react(self):
+    async def test_no_emoji_skips_react(self):
         db = make_db()
         strategy = FakeStrategy(sql="", args=[], emoji=None)
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("unmatched")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_not_awaited()
 
-    def test_empty_message_skips(self):
+    async def test_empty_message_skips(self):
         db = make_db()
         strategy = FakeStrategy(emoji="📦")
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_not_awaited()
 
-    def test_none_message_skips(self):
+    async def test_none_message_skips(self):
         db = make_db()
         strategy = FakeStrategy(emoji="📦")
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context(None)
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_not_awaited()
 
-    def test_grist_error_does_not_crash(self):
+    async def test_grist_error_does_not_crash(self):
         db = make_db()
         db.execute = AsyncMock(side_effect=Exception("connection refused"))
         strategy = FakeStrategy(
@@ -125,7 +124,7 @@ class TestReactCommand:
         ctx = make_context("order 123")
 
         # Should not raise
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_not_awaited()
 
@@ -133,18 +132,18 @@ class TestReactCommand:
 class TestMentionFiltering:
     """Tests for @-mention filtering in group chats."""
 
-    def test_dm_without_mention_processes_normally(self):
+    async def test_dm_without_mention_processes_normally(self):
         """Direct messages are processed without requiring an @-mention."""
         db = make_db()
         strategy = FakeStrategy(emoji="🏓")
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("ping", group=None, mentions=[])
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_awaited_once_with("🏓")
 
-    def test_group_message_with_bot_mentioned_processes(self):
+    async def test_group_message_with_bot_mentioned_processes(self):
         """Group messages with the bot @-mentioned are processed."""
         db = make_db()
         strategy = FakeStrategy(emoji="🏓")
@@ -155,22 +154,22 @@ class TestMentionFiltering:
             mentions=[{"uuid": BOT_UUID, "start": 0, "length": 1}],
         )
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_awaited_once_with("🏓")
 
-    def test_group_message_without_mention_is_ignored(self):
+    async def test_group_message_without_mention_is_ignored(self):
         """Group messages without any @-mention are ignored."""
         db = make_db()
         strategy = FakeStrategy(emoji="🏓")
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("ping", group="group.ABC123", mentions=[])
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_not_awaited()
 
-    def test_group_message_mentioning_someone_else_is_ignored(self):
+    async def test_group_message_mentioning_someone_else_is_ignored(self):
         """Group messages mentioning a different user are ignored."""
         db = make_db()
         strategy = FakeStrategy(emoji="🏓")
@@ -181,11 +180,11 @@ class TestMentionFiltering:
             mentions=[{"uuid": OTHER_UUID, "start": 0, "length": 1}],
         )
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_not_awaited()
 
-    def test_mention_placeholder_is_stripped_from_text(self):
+    async def test_mention_placeholder_is_stripped_from_text(self):
         """The U+FFFC placeholder character is stripped before strategy processing."""
         db = make_db()
         strategy = FakeStrategy(
@@ -198,12 +197,12 @@ class TestMentionFiltering:
             mentions=[{"uuid": BOT_UUID, "start": 0, "length": 1}],
         )
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         # Strategy receives clean text, so the command runs the full pipeline
         ctx.react.assert_awaited_once_with("✅")
 
-    def test_mention_only_message_is_skipped(self):
+    async def test_mention_only_message_is_skipped(self):
         """A message with only a mention placeholder and no other text is skipped."""
         db = make_db()
         strategy = FakeStrategy(emoji="🏓")
@@ -214,18 +213,18 @@ class TestMentionFiltering:
             mentions=[{"uuid": BOT_UUID, "start": 0, "length": 1}],
         )
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_not_awaited()
 
-    def test_dm_also_strips_placeholder(self):
+    async def test_dm_also_strips_placeholder(self):
         """U+FFFC stripping also applies to direct messages."""
         db = make_db()
         strategy = FakeStrategy(emoji="🏓")
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("\uFFFC ping", group=None, mentions=[])
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_awaited_once_with("🏓")
 
@@ -284,7 +283,7 @@ class TestRateLimiter:
 class TestRateLimitIntegration:
     """Tests for rate limiting integrated into the ReactCommand handler."""
 
-    def test_rate_limited_message_is_silently_dropped(self):
+    async def test_rate_limited_message_is_silently_dropped(self):
         """Messages from a rate-limited sender are silently ignored."""
         limiter = RateLimiter(max_messages=1, window_seconds=60)
         db = make_db()
@@ -295,15 +294,15 @@ class TestRateLimitIntegration:
 
         # First message succeeds
         ctx1 = make_context("ping", source_uuid="sender-1")
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx1))
+        await cmd.handle(ctx1)
         ctx1.react.assert_awaited_once_with("🏓")
 
         # Second message from same sender is dropped
         ctx2 = make_context("ping", source_uuid="sender-1")
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx2))
+        await cmd.handle(ctx2)
         ctx2.react.assert_not_awaited()
 
-    def test_different_senders_not_affected_by_each_other(self):
+    async def test_different_senders_not_affected_by_each_other(self):
         """Rate limiting one sender does not block another."""
         limiter = RateLimiter(max_messages=1, window_seconds=60)
         db = make_db()
@@ -314,15 +313,15 @@ class TestRateLimitIntegration:
 
         # sender-1 uses their allowance
         ctx1 = make_context("ping", source_uuid="sender-1")
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx1))
+        await cmd.handle(ctx1)
         ctx1.react.assert_awaited_once()
 
         # sender-2 is unaffected
         ctx2 = make_context("ping", source_uuid="sender-2")
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx2))
+        await cmd.handle(ctx2)
         ctx2.react.assert_awaited_once()
 
-    def test_no_rate_limiter_allows_all(self):
+    async def test_no_rate_limiter_allows_all(self):
         """Without a rate limiter, all messages are processed."""
         db = make_db()
         strategy = FakeStrategy(emoji="🏓")
@@ -330,10 +329,10 @@ class TestRateLimitIntegration:
 
         for _ in range(20):
             ctx = make_context("ping", source_uuid="sender-1")
-            asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+            await cmd.handle(ctx)
             ctx.react.assert_awaited_once()
 
-    def test_rate_limit_checked_after_mention_filter(self):
+    async def test_rate_limit_checked_after_mention_filter(self):
         """In groups, mention filtering runs before rate limiting.
 
         A group message without a mention should be ignored without
@@ -350,7 +349,7 @@ class TestRateLimitIntegration:
         ctx1 = make_context(
             "hello", group="group.X", mentions=[], source_uuid="sender-1"
         )
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx1))
+        await cmd.handle(ctx1)
         ctx1.react.assert_not_awaited()
 
         # Mentioned message — should still work (limit not consumed above)
@@ -360,7 +359,7 @@ class TestRateLimitIntegration:
             mentions=[{"uuid": BOT_UUID, "start": 0, "length": 1}],
             source_uuid="sender-1",
         )
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx2))
+        await cmd.handle(ctx2)
         ctx2.react.assert_awaited_once_with("🏓")
 
 
@@ -374,7 +373,7 @@ class TestAutoRetrust:
         identity.trust = AsyncMock()
         return identity
 
-    def test_normal_react_does_not_call_trust(self):
+    async def test_normal_react_does_not_call_trust(self):
         identity = self._make_identity()
         db = make_db()
         strategy = FakeStrategy(emoji="🏓")
@@ -384,12 +383,12 @@ class TestAutoRetrust:
         )
         ctx = make_context("ping")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_awaited_once_with("🏓")
         identity.trust.assert_not_awaited()
 
-    def test_untrusted_react_triggers_trust_and_retry(self):
+    async def test_untrusted_react_triggers_trust_and_retry(self):
         identity = self._make_identity()
         identity.is_untrusted_error.return_value = True
         db = make_db()
@@ -403,13 +402,13 @@ class TestAutoRetrust:
             side_effect=[Exception("Untrusted Identity for sender-X"), None]
         )
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         identity.trust.assert_awaited_once_with("sender-X")
         assert ctx.react.await_count == 2
         ctx.react.assert_has_awaits([call("🏓"), call("🏓")])
 
-    def test_trust_failure_is_contained(self):
+    async def test_trust_failure_is_contained(self):
         identity = self._make_identity()
         identity.is_untrusted_error.return_value = True
         identity.trust = AsyncMock(side_effect=Exception("network down"))
@@ -422,12 +421,12 @@ class TestAutoRetrust:
         ctx = make_context("ping")
         ctx.react = AsyncMock(side_effect=Exception("Untrusted Identity for x"))
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         identity.trust.assert_awaited_once()
         assert ctx.react.await_count == 1
 
-    def test_retry_failure_is_contained(self):
+    async def test_retry_failure_is_contained(self):
         identity = self._make_identity()
         identity.is_untrusted_error.return_value = True
         db = make_db()
@@ -444,12 +443,12 @@ class TestAutoRetrust:
             ]
         )
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         identity.trust.assert_awaited_once()
         assert ctx.react.await_count == 2
 
-    def test_unrelated_react_failure_propagates(self):
+    async def test_unrelated_react_failure_propagates(self):
         identity = self._make_identity()
         identity.is_untrusted_error.return_value = False
         db = make_db()
@@ -462,11 +461,11 @@ class TestAutoRetrust:
         ctx.react = AsyncMock(side_effect=RuntimeError("unrelated"))
 
         with pytest.raises(RuntimeError, match="unrelated"):
-            asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+            await cmd.handle(ctx)
 
         identity.trust.assert_not_awaited()
 
-    def test_without_identity_client_failure_propagates(self):
+    async def test_without_identity_client_failure_propagates(self):
         db = make_db()
         strategy = FakeStrategy(emoji="🏓")
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
@@ -474,4 +473,4 @@ class TestAutoRetrust:
         ctx.react = AsyncMock(side_effect=Exception("Untrusted Identity for x"))
 
         with pytest.raises(Exception, match="Untrusted Identity"):
-            asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+            await cmd.handle(ctx)

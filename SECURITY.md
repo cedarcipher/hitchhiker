@@ -49,7 +49,7 @@ the full threat catalog (19 threats, 60+ hardening items), see [THREAT_MODEL.md]
 - Compatible with **rootless Docker** — containers run in an unprivileged user
   namespace, eliminating most container-escape risks. LUKS setup still requires
   `sudo`, but Docker itself needs no root privileges.
-- Slim base image (`python:3.13-slim`) with non-root user (`1000:1000`)
+- Slim base image (`python:3.14-slim`) with non-root user (`1000:1000`)
 - Pinned dependency versions in `pyproject.toml`
 - Docker logging disabled (`driver: none`) on all containers
 - Grist telemetry disabled (`GRIST_TELEMETRY_LEVEL=off`)
