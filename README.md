@@ -689,6 +689,8 @@ rules:
 | `exact`    | `exact: "ping"`          | Exact match (case-insensitive)                |
 | `contains` | `contains: "help"`       | Contains substring                            |
 | `regex`    | `regex: "^(\\d{4,})$"`   | Regex; first capture group → `{input}`        |
+| `any_of`   | `any_of: [...]`          | List of matchers; rule fires if any match (first capture wins) |
+| `all_of`   | `all_of: [...]`          | List of matchers; rule fires only if all match (last capture wins) |
 | `any`      | `any: true`              | Matches every message (catch-all)             |
 
 #### Template variables
@@ -769,6 +771,32 @@ rules:
         word: "{message}"
     react:
       column: emoji
+```
+
+### YAML example: optional keyword via `any_of`
+
+Trigger on a keyword *or* a bare pattern. Useful when users sometimes send
+`stock BAND-12345` and sometimes just `BAND-12345`:
+
+```yaml
+rules:
+  - name: stock_check
+    match:
+      any_of:
+        - prefix: "stock "
+        - regex: "^BAND-\\d+$"
+    query:
+      table: Products
+      select: [in_stock]
+      where:
+        sku: "{input}"
+    react:
+      map:
+        column: in_stock
+        values:
+          1: "✅"
+          0: "🚫"
+      empty: "❓"
 ```
 
 ### YAML example: multi-rule strategy

@@ -1,5 +1,7 @@
 """Tests for the YAML strategy engine — match, query, and react logic."""
 
+import pytest
+
 from bot.yaml_strategy import YamlStrategy
 
 
@@ -294,6 +296,316 @@ class TestAnyMatch:
         )
         emoji = s.react("literally anything", [])
         assert emoji == "👋"
+
+
+class TestAnyOfMatch:
+    def test_matches_first_alternative(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {
+                        "any_of": [
+                            {"prefix": "stock "},
+                            {"regex": r"^BAND-\d+$"},
+                        ]
+                    },
+                    "react": {"emoji": "✅"},
+                }
+            ]
+        )
+        assert s.react("stock Bandages", []) == "✅"
+
+    def test_matches_later_alternative(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {
+                        "any_of": [
+                            {"prefix": "stock "},
+                            {"regex": r"^BAND-\d+$"},
+                        ]
+                    },
+                    "react": {"emoji": "✅"},
+                }
+            ]
+        )
+        assert s.react("BAND-12345", []) == "✅"
+
+    def test_no_alternative_matches(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {
+                        "any_of": [
+                            {"prefix": "stock "},
+                            {"regex": r"^BAND-\d+$"},
+                        ]
+                    },
+                    "react": {"emoji": "✅"},
+                }
+            ]
+        )
+        assert s.react("hello", []) is None
+
+    def test_first_with_capture_wins(self):
+        """A capturing alternative beats a non-capturing one that fired earlier."""
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {
+                        "any_of": [
+                            {"contains": "stock"},
+                            {"regex": r"BAND-(\d+)"},
+                        ]
+                    },
+                    "query": {
+                        "table": "T",
+                        "select": ["x"],
+                        "where": {"id": "{input}"},
+                    },
+                    "react": {"emoji": "✅"},
+                }
+            ]
+        )
+        _, args = s.query("stock BAND-12345")
+        assert args == ["12345"]
+
+    def test_fallback_when_no_capture(self):
+        """When matchers match but none capture, the rule still fires."""
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {
+                        "any_of": [
+                            {"contains": "hello"},
+                            {"contains": "world"},
+                        ]
+                    },
+                    "react": {"emoji": "👋"},
+                }
+            ]
+        )
+        assert s.react("hello world", []) == "👋"
+
+    def test_uses_first_alternative_capture(self):
+        """First capturing alternative wins, even if a later one would also capture."""
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {
+                        "any_of": [
+                            {"prefix": "stock "},
+                            {"regex": r"BAND-(\d+)"},
+                        ]
+                    },
+                    "query": {
+                        "table": "T",
+                        "select": ["x"],
+                        "where": {"id": "{input}"},
+                    },
+                    "react": {"emoji": "✅"},
+                }
+            ]
+        )
+        _, args = s.query("stock BAND-12345")
+        assert args == ["band-12345"]
+
+
+class TestAllOfMatch:
+    def test_all_match(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {
+                        "all_of": [
+                            {"prefix": "stock "},
+                            {"regex": r"\d{4,}"},
+                        ]
+                    },
+                    "react": {"emoji": "✅"},
+                }
+            ]
+        )
+        assert s.react("stock 12345", []) == "✅"
+
+    def test_one_fails_no_match(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {
+                        "all_of": [
+                            {"prefix": "stock "},
+                            {"regex": r"\d{4,}"},
+                        ]
+                    },
+                    "react": {"emoji": "✅"},
+                }
+            ]
+        )
+        assert s.react("stock abc", []) is None
+        assert s.react("inventory 12345", []) is None
+
+    def test_last_capture_wins(self):
+        """When multiple matchers capture, the last one's {input} is used."""
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {
+                        "all_of": [
+                            {"prefix": "order "},
+                            {"regex": r"(\d+)"},
+                        ]
+                    },
+                    "query": {
+                        "table": "T",
+                        "select": ["x"],
+                        "where": {"id": "{input}"},
+                    },
+                    "react": {"emoji": "✅"},
+                }
+            ]
+        )
+        _, args = s.query("order ABC-123 priority")
+        assert args == ["123"]
+
+    def test_mixed_capture_and_non_capture(self):
+        """A capturing matcher's {input} survives through a non-capturing matcher."""
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {
+                        "all_of": [
+                            {"regex": r"order (\d+)"},
+                            {"contains": "please"},
+                        ]
+                    },
+                    "query": {
+                        "table": "T",
+                        "select": ["x"],
+                        "where": {"id": "{input}"},
+                    },
+                    "react": {"emoji": "✅"},
+                }
+            ]
+        )
+        _, args = s.query("order 42 please")
+        assert args == ["42"]
+        assert s.react("order 42", []) is None
+
+
+class TestMatchValidation:
+    def test_rejects_empty_any_of(self):
+        with pytest.raises(ValueError, match="must contain at least one matcher"):
+            make_strategy(
+                [
+                    {
+                        "name": "test",
+                        "match": {"any_of": []},
+                        "react": {"emoji": "✅"},
+                    }
+                ]
+            )
+
+    def test_rejects_empty_all_of(self):
+        with pytest.raises(ValueError, match="must contain at least one matcher"):
+            make_strategy(
+                [
+                    {
+                        "name": "test",
+                        "match": {"all_of": []},
+                        "react": {"emoji": "✅"},
+                    }
+                ]
+            )
+
+    def test_rejects_mixed_top_level_keys(self):
+        with pytest.raises(ValueError, match="exactly one of"):
+            make_strategy(
+                [
+                    {
+                        "name": "test",
+                        "match": {"any_of": [{"prefix": "x"}], "prefix": "y"},
+                        "react": {"emoji": "✅"},
+                    }
+                ]
+            )
+
+    def test_rejects_empty_match(self):
+        with pytest.raises(ValueError, match="exactly one of"):
+            make_strategy(
+                [
+                    {
+                        "name": "test",
+                        "match": {},
+                        "react": {"emoji": "✅"},
+                    }
+                ]
+            )
+
+    def test_rejects_invalid_child(self):
+        """A malformed matcher inside any_of is caught recursively."""
+        with pytest.raises(ValueError, match="exactly one of"):
+            make_strategy(
+                [
+                    {
+                        "name": "test",
+                        "match": {"any_of": [{}]},
+                        "react": {"emoji": "✅"},
+                    }
+                ]
+            )
+
+    def test_accepts_existing_single_key_forms(self):
+        """All existing leaf matcher forms still load without error."""
+        for leaf in [
+            {"prefix": "x"},
+            {"suffix": "x"},
+            {"exact": "x"},
+            {"contains": "x"},
+            {"regex": "x"},
+            {"any": True},
+        ]:
+            make_strategy(
+                [{"name": "t", "match": leaf, "react": {"emoji": "✅"}}]
+            )
+
+
+class TestNestedMatchers:
+    def test_any_of_containing_all_of(self):
+        """An any_of branch can contain an all_of (and vice versa)."""
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {
+                        "any_of": [
+                            {
+                                "all_of": [
+                                    {"prefix": "stock "},
+                                    {"regex": r"\d{4,}"},
+                                ]
+                            },
+                            {"regex": r"^BAND-\d+$"},
+                        ]
+                    },
+                    "react": {"emoji": "✅"},
+                }
+            ]
+        )
+        assert s.react("stock 12345", []) == "✅"
+        assert s.react("BAND-99", []) == "✅"
+        assert s.react("hello", []) is None
+        assert s.react("stock abc", []) is None
 
 
 # --- Query builder tests ---
