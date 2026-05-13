@@ -181,18 +181,25 @@ class YamlStrategy:
 
     def fuzzy_query(
         self, message_text: str
-    ) -> tuple[str, list, dict] | None:
-        """Return (sql, args, fuzzy_cfg) for the candidate-pool query, or
-        None if the matched rule has no fuzzy: block."""
+    ) -> tuple[str, list, dict, str] | None:
+        """Return (sql, args, fuzzy_cfg, fuzzy_input) for the candidate-pool
+        query, or None if the matched rule has no fuzzy: block.
+
+        ``fuzzy_input`` is the value to fuzzy-match against the column: the
+        rule's captured ``{input}`` if the matcher set one (prefix/suffix/regex
+        with a group), otherwise the full stripped message text.
+        """
         text = message_text.strip()
         for rule in self.rules:
-            if self._match(rule.get("match", {}), text) is None:
+            variables = self._match(rule.get("match", {}), text)
+            if variables is None:
                 continue
             fuzzy_def = rule.get("fuzzy")
             if not fuzzy_def:
                 return None
             table = rule["query"]["table"]
-            return (f"SELECT * FROM {table}", [], fuzzy_def)
+            fuzzy_input = variables.get("input", text)
+            return (f"SELECT * FROM {table}", [], fuzzy_def, fuzzy_input)
         return None
 
     def react_fuzzy(

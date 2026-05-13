@@ -684,7 +684,7 @@ class TestFuzzyFallback:
             sql="SELECT * FROM T",
             args=[],
             emoji="📦",
-            fuzzy_query_value=("SELECT * FROM Other", [], {"column": "x"}),
+            fuzzy_query_value=("SELECT * FROM Other", [], {"column": "x"}, "order 1"),
             react_fuzzy_value="🤔",
         )
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
@@ -735,6 +735,7 @@ class TestFuzzyFallback:
                 "SELECT * FROM Inventory",
                 [],
                 {"column": "SKU", "threshold": 80, "limit": 3},
+                "ABX",
             ),
             react_fuzzy_value="🤔",
             respond_fuzzy_value=("Did you mean ABC-123?", True),
@@ -772,6 +773,7 @@ class TestFuzzyFallback:
                 "SELECT * FROM Inventory",
                 [],
                 {"column": "SKU", "threshold": 80, "limit": 3},
+                "ABX",
             ),
             react_fuzzy_value="🤔",
             respond_fuzzy_value=("Did you mean ABC-123?", True),
@@ -797,6 +799,7 @@ class TestFuzzyFallback:
                 "SELECT * FROM Inventory",
                 [],
                 {"column": "SKU", "threshold": 80, "limit": 3},
+                "ABX",
             ),
             react_fuzzy_value="🤔",
             respond_fuzzy_value=("Did you mean ABC-123?", True),
