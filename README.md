@@ -741,6 +741,29 @@ react:
   emoji: "🏓"
 ```
 
+#### Respond formats
+
+Text replies are independent of emoji reactions — a rule can use either, both,
+or neither. Add a `respond:` block to send a text message on match:
+
+```yaml
+# Static welcome — no query needed
+respond:
+  text: "Welcome to the chat!"
+
+# Templated with query result columns
+respond:
+  text: "Order {input}: {status}"
+  empty: "Order {input} not found."   # used when query returns no rows
+  quote: false                        # default true → quoted reply; false → fresh message
+```
+
+| Key     | Type   | Required | Default | Behavior                                                 |
+|---------|--------|----------|---------|----------------------------------------------------------|
+| `text`  | string | yes      | —       | Body. May reference `{message}`, `{input}`, `{raw}`, or any column in the first query result row. |
+| `empty` | string | no       | —       | Used when the query returned no rows. Match vars interpolate; row columns aren't available. If unset, no text is sent on empty. |
+| `quote` | bool   | no       | `true`  | `true` → quoted reply to the trigger message. `false` → fresh message in the chat. |
+
 #### Optional: table schema declaration
 
 Declare expected tables for documentation and startup validation:
@@ -797,6 +820,23 @@ rules:
           1: "✅"
           0: "🚫"
       empty: "❓"
+```
+
+### YAML example: welcome message
+
+Send a static greeting when a user says hi — emoji reaction plus a text reply:
+
+```yaml
+rules:
+  - name: welcome
+    match:
+      any_of:
+        - exact: "hi"
+        - exact: "hello"
+    react:
+      emoji: "👋"
+    respond:
+      text: "Welcome to the chat!"
 ```
 
 ### YAML example: multi-rule strategy
@@ -866,6 +906,17 @@ class Strategy:
 
 Use Python when you need multi-step logic, external API calls, complex text parsing,
 or anything beyond simple pattern matching and value lookups.
+
+Python strategies may optionally implement a third method to send text replies:
+
+```python
+def respond(self, message_text: str, rows: list[dict]) -> tuple[str, bool] | None:
+    """Return (text, quote) — bot uses c.reply() if quote else c.send().
+    Return None for no text reply."""
+```
+
+Omitting the method disables the text channel for that strategy; existing
+strategies without `respond()` keep working unchanged.
 
 ### Deploying your strategy
 

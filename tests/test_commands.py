@@ -21,16 +21,20 @@ SENDER_UUID = "sender-uuid-aaaa-bbbb"
 class FakeStrategy:
     """A simple fake strategy for testing."""
 
-    def __init__(self, sql="", args=None, emoji=None):
+    def __init__(self, sql="", args=None, emoji=None, respond_value=None):
         self._sql = sql
         self._args = args or []
         self._emoji = emoji
+        self._respond_value = respond_value
 
     def query(self, message_text):
         return (self._sql, self._args)
 
     def react(self, message_text, rows):
         return self._emoji
+
+    def respond(self, message_text, rows):
+        return self._respond_value
 
 
 def make_context(text="hello", group=None, mentions=None, source_uuid=SENDER_UUID):
@@ -42,6 +46,8 @@ def make_context(text="hello", group=None, mentions=None, source_uuid=SENDER_UUI
     ctx.message.mentions = mentions or []
     ctx.message.source_uuid = source_uuid
     ctx.react = AsyncMock()
+    ctx.reply = AsyncMock()
+    ctx.send = AsyncMock()
     return ctx
 
 
@@ -474,3 +480,95 @@ class TestAutoRetrust:
 
         with pytest.raises(Exception, match="Untrusted Identity"):
             await cmd.handle(ctx)
+
+
+class TestRespondCommand:
+    async def test_react_and_respond_both_fire(self):
+        db = make_db()
+        strategy = FakeStrategy(
+            emoji="👋",
+            respond_value=("Welcome!", True),
+        )
+        cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
+        ctx = make_context("hi")
+
+        await cmd.handle(ctx)
+
+        ctx.react.assert_awaited_once_with("👋")
+        ctx.reply.assert_awaited_once_with("Welcome!")
+        ctx.send.assert_not_awaited()
+
+    async def test_only_respond_no_emoji(self):
+        db = make_db()
+        strategy = FakeStrategy(respond_value=("Welcome!", True))
+        cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
+        ctx = make_context("hi")
+
+        await cmd.handle(ctx)
+
+        ctx.react.assert_not_awaited()
+        ctx.reply.assert_awaited_once_with("Welcome!")
+
+    async def test_quote_false_uses_send(self):
+        db = make_db()
+        strategy = FakeStrategy(respond_value=("Announcement!", False))
+        cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
+        ctx = make_context("hi")
+
+        await cmd.handle(ctx)
+
+        ctx.send.assert_awaited_once_with("Announcement!")
+        ctx.reply.assert_not_awaited()
+
+    async def test_respond_returning_none_sends_nothing(self):
+        db = make_db()
+        strategy = FakeStrategy(emoji="👋", respond_value=None)
+        cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
+        ctx = make_context("hi")
+
+        await cmd.handle(ctx)
+
+        ctx.react.assert_awaited_once_with("👋")
+        ctx.reply.assert_not_awaited()
+        ctx.send.assert_not_awaited()
+
+    async def test_strategy_without_respond_method_still_reacts(self):
+        """A Python strategy that doesn't define respond() must still work."""
+
+        class OldStrategy:
+            def query(self, _):
+                return ("", [])
+
+            def react(self, _text, _rows):
+                return "🏓"
+
+        db = make_db()
+        cmd = ReactCommand(db=db, strategy=OldStrategy(), bot_uuid=BOT_UUID)
+        ctx = make_context("ping")
+
+        await cmd.handle(ctx)
+
+        ctx.react.assert_awaited_once_with("🏓")
+        ctx.reply.assert_not_awaited()
+        ctx.send.assert_not_awaited()
+
+    async def test_untrusted_reply_triggers_trust_and_retry(self):
+        identity = MagicMock(spec=SignalIdentityClient)
+        identity.is_untrusted_error = MagicMock(return_value=True)
+        identity.trust = AsyncMock()
+        db = make_db()
+        strategy = FakeStrategy(respond_value=("Welcome!", True))
+        cmd = ReactCommand(
+            db=db, strategy=strategy, bot_uuid=BOT_UUID,
+            identity_client=identity,
+        )
+        ctx = make_context("hi", source_uuid="sender-Y")
+        ctx.reply = AsyncMock(
+            side_effect=[Exception("Untrusted Identity for sender-Y"), None]
+        )
+
+        await cmd.handle(ctx)
+
+        identity.trust.assert_awaited_once_with("sender-Y")
+        assert ctx.reply.await_count == 2
+        ctx.reply.assert_has_awaits([call("Welcome!"), call("Welcome!")])

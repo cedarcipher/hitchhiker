@@ -118,25 +118,38 @@ class ReactCommand(Command):
                 logger.warning("Grist query failed (details suppressed)")
                 return
 
-        # 3. Ask the strategy how to react
+        # 3. Ask the strategy how to react (emoji)
         emoji = self.strategy.react(text, rows)
-        if emoji is None:
-            return  # strategy chose not to react
+        if emoji is not None:
+            # React on the original message (with auto-trust retry on
+            # "Untrusted Identity" failures — safety-number-changed senders)
+            await self._with_trust_retry(c, lambda: c.react(emoji))
 
-        # 4. React on the original message (with auto-trust retry on
-        #    "Untrusted Identity" failures — safety-number-changed senders)
-        await self._react_with_trust_retry(c, emoji)
+        # 4. Ask the strategy for an optional text response
+        respond = getattr(self.strategy, "respond", None)
+        if respond is None:
+            return
+        response = respond(text, rows)
+        if response is None:
+            return
+        reply_text, quote = response
+        action = (lambda: c.reply(reply_text)) if quote else (lambda: c.send(reply_text))
+        await self._with_trust_retry(c, action)
 
-    async def _react_with_trust_retry(self, c: Context, emoji: str) -> None:
-        """React on c.message; on untrusted-identity failure, trust the
-        sender's UUID and retry exactly once. Unrelated failures propagate."""
+    async def _with_trust_retry(self, c: Context, action) -> None:
+        """Run ``action()`` once; on untrusted-identity failure, trust the
+        sender's UUID and retry exactly once. Unrelated failures propagate.
+
+        ``action`` is a zero-arg callable returning a coroutine — fresh each
+        call so the retry runs a new coroutine, not an already-awaited one.
+        """
         try:
-            await c.react(emoji)
+            await action()
         except Exception as exc:
             if self.identity_client and self.identity_client.is_untrusted_error(exc):
                 try:
                     await self.identity_client.trust(c.message.source_uuid)
-                    await c.react(emoji)
+                    await action()
                 except Exception:
                     logger.warning(
                         "Auto-trust retry failed (details suppressed)"
