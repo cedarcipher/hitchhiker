@@ -8,9 +8,31 @@ import yaml
 class YamlStrategy:
     """Strategy compiled from a declarative YAML definition."""
 
+    _LEAF_KEYS = ("prefix", "suffix", "exact", "contains", "regex", "any")
+    _MATCH_KEYS = ("any_of", "all_of") + _LEAF_KEYS
+
     def __init__(self, config: dict) -> None:
         self.rules = config.get("rules", [])
         self.tables = config.get("tables", {})
+        for rule in self.rules:
+            self._validate_match(rule.get("match", {}))
+
+    @classmethod
+    def _validate_match(cls, match_def: dict) -> None:
+        present = [k for k in cls._MATCH_KEYS if k in match_def]
+        if len(present) != 1:
+            raise ValueError(
+                "match must have exactly one of: " + ", ".join(cls._MATCH_KEYS)
+            )
+        key = present[0]
+        if key in ("any_of", "all_of"):
+            items = match_def[key]
+            if not items:
+                raise ValueError(
+                    f"{key} must contain at least one matcher"
+                )
+            for sub in items:
+                cls._validate_match(sub)
 
     @classmethod
     def from_file(cls, path: str) -> "YamlStrategy":
@@ -53,6 +75,28 @@ class YamlStrategy:
         """Return template variables if matched, None otherwise."""
         message = text.lower().strip()
         variables = {"message": message, "raw": text}
+
+        if "any_of" in match_def:
+            fallback = None
+            for sub in match_def["any_of"]:
+                result = self._match(sub, text)
+                if result is None:
+                    continue
+                if "input" in result:
+                    return result
+                if fallback is None:
+                    fallback = result
+            return fallback
+
+        if "all_of" in match_def:
+            merged = {"message": message, "raw": text}
+            for sub in match_def["all_of"]:
+                result = self._match(sub, text)
+                if result is None:
+                    return None
+                if "input" in result:
+                    merged["input"] = result["input"]
+            return merged
 
         if match_def.get("any"):
             return variables
