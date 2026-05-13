@@ -764,6 +764,48 @@ respond:
 | `empty` | string | no       | —       | Used when the query returned no rows. Match vars interpolate; row columns aren't available. If unset, no text is sent on empty. |
 | `quote` | bool   | no       | `true`  | `true` → quoted reply to the trigger message. `false` → fresh message in the chat. |
 
+#### Fuzzy fallback
+
+When the primary `query:` returns no rows, a rule can fall back to a fuzzy
+search against a column's values using [thefuzz](https://github.com/seatgeek/thefuzz).
+Add a `fuzzy:` block:
+
+```yaml
+fuzzy:
+  column: SKU                   # column whose values form the candidate pool
+  threshold: 80                 # min fuzzy score 0-100 (default 80)
+  limit: 3                      # max suggestions, 1-3 (default 3)
+  react:
+    emoji: '🤔'                  # distinct emoji when fuzzy hits
+  respond:
+    text: |
+      Did you mean:
+      {candidates}
+    item: "{SKU} ({Status}, {score}%)"
+    separator: "\n  "           # joined between items (default "\n")
+    quote: true                 # default true
+```
+
+| Key                  | Type   | Required | Default | Behavior                                          |
+|----------------------|--------|----------|---------|---------------------------------------------------|
+| `column`             | string | yes      | —       | Column in the rule's `query.table` to match against. |
+| `threshold`          | int    | no       | `80`    | Min score (0-100). Candidates below are dropped.  |
+| `limit`              | int    | no       | `3`     | Max suggestions. Must be 1-3.                     |
+| `react.emoji`        | string | no       | —       | Single static emoji when fuzzy hits.              |
+| `respond.text`       | string | yes      | —       | Must reference `{candidates}`. Match vars also interpolate. |
+| `respond.item`       | string | yes      | —       | Per-row template. Can reference row columns, match vars, `{score}`. |
+| `respond.separator`  | string | no       | `"\n"`  | Joined between rendered items.                    |
+| `respond.quote`      | bool   | no       | `true`  | `true` → quoted reply, `false` → fresh message.   |
+
+**Fetch cost:** fuzzy fetches *all* rows of the table on each miss. Suitable
+for small tables (hundreds to a few thousand rows); avoid on very large tables.
+
+**Three pipeline states:**
+
+- Exact hit (primary returns ≥ 1 row): existing `react:` / `respond:` runs.
+- Fuzzy hit (primary empty, fuzzy finds ≥ 1 above threshold): `fuzzy.react` / `fuzzy.respond` runs.
+- Miss (both empty): existing `react.empty:` runs.
+
 #### Optional: table schema declaration
 
 Declare expected tables for documentation and startup validation:

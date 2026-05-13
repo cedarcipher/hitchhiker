@@ -4,6 +4,7 @@ import logging
 import time
 
 from signalbot import Command, Context
+from thefuzz import fuzz, process
 
 from bot.db import GristClient
 
@@ -118,23 +119,45 @@ class ReactCommand(Command):
                 logger.warning("Grist query failed (details suppressed)")
                 return
 
-        # 3. Ask the strategy how to react (emoji)
-        emoji = self.strategy.react(text, rows)
+        # 3. If primary returned no rows, run the fuzzy fallback (if any)
+        fuzzy_rows: list[dict] = []
+        if not rows and hasattr(self.strategy, "fuzzy_query"):
+            fuzzy_info = self.strategy.fuzzy_query(text)
+            if fuzzy_info is not None:
+                fz_sql, fz_args, fz_cfg = fuzzy_info
+                try:
+                    all_rows = await self.db.execute(fz_sql, fz_args)
+                except Exception:
+                    logger.warning(
+                        "Fuzzy fetch failed (details suppressed)"
+                    )
+                    all_rows = []
+                fuzzy_rows = self._rank_fuzzy(text, all_rows, fz_cfg)
+
+        # 4. Pick the react/respond branch
+        if fuzzy_rows:
+            emoji = self.strategy.react_fuzzy(text, fuzzy_rows)
+            response = self.strategy.respond_fuzzy(text, fuzzy_rows)
+        else:
+            emoji = self.strategy.react(text, rows)
+            response = getattr(self.strategy, "respond", lambda *_: None)(
+                text, rows
+            )
+
+        # 5. React on the original message (auto-trust retry handles
+        #    "Untrusted Identity" failures from safety-number changes)
         if emoji is not None:
-            # React on the original message (with auto-trust retry on
-            # "Untrusted Identity" failures — safety-number-changed senders)
             await self._with_trust_retry(c, lambda: c.react(emoji))
 
-        # 4. Ask the strategy for an optional text response
-        respond = getattr(self.strategy, "respond", None)
-        if respond is None:
-            return
-        response = respond(text, rows)
-        if response is None:
-            return
-        reply_text, quote = response
-        action = (lambda: c.reply(reply_text)) if quote else (lambda: c.send(reply_text))
-        await self._with_trust_retry(c, action)
+        # 6. Optional text response (quoted reply or fresh message)
+        if response is not None:
+            reply_text, quote = response
+            action = (
+                (lambda: c.reply(reply_text))
+                if quote
+                else (lambda: c.send(reply_text))
+            )
+            await self._with_trust_retry(c, action)
 
     async def _with_trust_retry(self, c: Context, action) -> None:
         """Run ``action()`` once; on untrusted-identity failure, trust the
@@ -158,3 +181,26 @@ class ReactCommand(Command):
                     logger.info("Auto-trusted sender after react failure")
                 return
             raise
+
+    @staticmethod
+    def _rank_fuzzy(
+        query_text: str, rows: list[dict], cfg: dict
+    ) -> list[dict]:
+        """Rank rows by fuzzy similarity against cfg['column'].
+
+        Returns rows with a synthetic 'score' key added, in descending score
+        order, filtered to those at or above cfg['threshold'], capped at
+        cfg['limit']. Rows whose column value is None/empty are skipped.
+        """
+        column = cfg["column"]
+        threshold = cfg.get("threshold", 80)
+        limit = cfg.get("limit", 3)
+        choices = {i: r[column] for i, r in enumerate(rows) if r.get(column)}
+        matches = process.extract(
+            query_text, choices, scorer=fuzz.WRatio, limit=limit
+        )
+        return [
+            {**rows[idx], "score": score}
+            for _value, score, idx in matches
+            if score >= threshold
+        ]

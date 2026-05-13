@@ -21,11 +21,23 @@ SENDER_UUID = "sender-uuid-aaaa-bbbb"
 class FakeStrategy:
     """A simple fake strategy for testing."""
 
-    def __init__(self, sql="", args=None, emoji=None, respond_value=None):
+    def __init__(
+        self,
+        sql="",
+        args=None,
+        emoji=None,
+        respond_value=None,
+        fuzzy_query_value=None,
+        react_fuzzy_value=None,
+        respond_fuzzy_value=None,
+    ):
         self._sql = sql
         self._args = args or []
         self._emoji = emoji
         self._respond_value = respond_value
+        self._fuzzy_query_value = fuzzy_query_value
+        self._react_fuzzy_value = react_fuzzy_value
+        self._respond_fuzzy_value = respond_fuzzy_value
 
     def query(self, message_text):
         return (self._sql, self._args)
@@ -35,6 +47,15 @@ class FakeStrategy:
 
     def respond(self, message_text, rows):
         return self._respond_value
+
+    def fuzzy_query(self, message_text):
+        return self._fuzzy_query_value
+
+    def react_fuzzy(self, message_text, rows):
+        return self._react_fuzzy_value
+
+    def respond_fuzzy(self, message_text, rows):
+        return self._respond_fuzzy_value
 
 
 def make_context(text="hello", group=None, mentions=None, source_uuid=SENDER_UUID):
@@ -572,3 +593,236 @@ class TestRespondCommand:
         identity.trust.assert_awaited_once_with("sender-Y")
         assert ctx.reply.await_count == 2
         ctx.reply.assert_has_awaits([call("Welcome!"), call("Welcome!")])
+
+
+class TestRankFuzzy:
+    def test_returns_top_matches_above_threshold(self, monkeypatch):
+        rows = [
+            {"SKU": "ABC-123", "Status": "InStock"},
+            {"SKU": "ABD-122", "Status": "LowStock"},
+            {"SKU": "ZZZ-999", "Status": "InStock"},
+        ]
+        from bot import commands as commands_mod
+        def fake_extract(query, choices, scorer, limit):
+            return [
+                (choices[0], 90, 0),
+                (choices[1], 82, 1),
+                (choices[2], 30, 2),
+            ][:limit]
+        monkeypatch.setattr(commands_mod.process, "extract", fake_extract)
+
+        cfg = {"column": "SKU", "threshold": 80, "limit": 3}
+        ranked = ReactCommand._rank_fuzzy("ABC", rows, cfg)
+
+        assert ranked == [
+            {"SKU": "ABC-123", "Status": "InStock", "score": 90},
+            {"SKU": "ABD-122", "Status": "LowStock", "score": 82},
+        ]
+
+    def test_drops_rows_below_threshold(self, monkeypatch):
+        rows = [{"SKU": "ABC-123"}]
+        from bot import commands as commands_mod
+        monkeypatch.setattr(
+            commands_mod.process,
+            "extract",
+            lambda q, c, scorer, limit: [(c[0], 50, 0)],
+        )
+        cfg = {"column": "SKU", "threshold": 80, "limit": 3}
+        assert ReactCommand._rank_fuzzy("XYZ", rows, cfg) == []
+
+    def test_respects_limit_via_extract(self, monkeypatch):
+        rows = [{"SKU": f"P{i}"} for i in range(10)]
+        captured = {}
+        from bot import commands as commands_mod
+        def fake_extract(query, choices, scorer, limit):
+            captured["limit"] = limit
+            return [(choices[i], 99, i) for i in range(min(limit, len(choices)))]
+        monkeypatch.setattr(commands_mod.process, "extract", fake_extract)
+
+        cfg = {"column": "SKU", "threshold": 0, "limit": 2}
+        ranked = ReactCommand._rank_fuzzy("P", rows, cfg)
+        assert captured["limit"] == 2
+        assert len(ranked) == 2
+
+    def test_skips_rows_with_empty_column(self, monkeypatch):
+        rows = [
+            {"SKU": "ABC-123"},
+            {"SKU": None},
+            {"SKU": ""},
+            {"SKU": "ABD-122"},
+        ]
+        captured = {}
+        from bot import commands as commands_mod
+        def fake_extract(query, choices, scorer, limit):
+            captured["choices"] = dict(choices)
+            return []
+        monkeypatch.setattr(commands_mod.process, "extract", fake_extract)
+
+        cfg = {"column": "SKU", "threshold": 80, "limit": 3}
+        ReactCommand._rank_fuzzy("ABC", rows, cfg)
+        assert captured["choices"] == {0: "ABC-123", 3: "ABD-122"}
+
+    def test_defaults_threshold_and_limit_when_missing(self, monkeypatch):
+        rows = [{"SKU": "ABC-123"}]
+        captured = {}
+        from bot import commands as commands_mod
+        def fake_extract(query, choices, scorer, limit):
+            captured["limit"] = limit
+            return [(choices[0], 79, 0)]
+        monkeypatch.setattr(commands_mod.process, "extract", fake_extract)
+
+        cfg = {"column": "SKU"}
+        ranked = ReactCommand._rank_fuzzy("ABC", rows, cfg)
+        assert captured["limit"] == 3
+        assert ranked == []
+
+
+class TestFuzzyFallback:
+    async def test_exact_hit_skips_fuzzy(self):
+        db = make_db(rows=[{"status": "shipped"}])
+        strategy = FakeStrategy(
+            sql="SELECT * FROM T",
+            args=[],
+            emoji="📦",
+            fuzzy_query_value=("SELECT * FROM Other", [], {"column": "x"}),
+            react_fuzzy_value="🤔",
+        )
+        cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
+        ctx = make_context("order 1")
+
+        await cmd.handle(ctx)
+
+        assert db.execute.await_count == 1
+        ctx.react.assert_awaited_once_with("📦")
+
+    async def test_primary_empty_no_fuzzy_query_uses_react_empty(self):
+        """Strategy that returns None from fuzzy_query → existing react path runs."""
+        db = make_db(rows=[])
+        strategy = FakeStrategy(
+            sql="SELECT * FROM T",
+            args=[],
+            emoji="❔",
+            fuzzy_query_value=None,
+        )
+        cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
+        ctx = make_context("order 1")
+
+        await cmd.handle(ctx)
+
+        assert db.execute.await_count == 1
+        ctx.react.assert_awaited_once_with("❔")
+
+    async def test_primary_empty_fuzzy_hits(self, monkeypatch):
+        from bot import commands as commands_mod
+        monkeypatch.setattr(
+            commands_mod.process,
+            "extract",
+            lambda q, c, scorer, limit: [(c[0], 90, 0)],
+        )
+
+        db = MagicMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                [],
+                [{"SKU": "ABC-123"}],
+            ]
+        )
+        strategy = FakeStrategy(
+            sql="SELECT * FROM Inventory",
+            args=[],
+            emoji="❔",
+            fuzzy_query_value=(
+                "SELECT * FROM Inventory",
+                [],
+                {"column": "SKU", "threshold": 80, "limit": 3},
+            ),
+            react_fuzzy_value="🤔",
+            respond_fuzzy_value=("Did you mean ABC-123?", True),
+        )
+        cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
+        ctx = make_context("sku ABX")
+
+        await cmd.handle(ctx)
+
+        assert db.execute.await_count == 2
+        ctx.react.assert_awaited_once_with("🤔")
+        ctx.reply.assert_awaited_once_with("Did you mean ABC-123?")
+
+    async def test_primary_empty_fuzzy_misses_uses_react_empty(self, monkeypatch):
+        """Fuzzy fetch returns rows but all score below threshold."""
+        from bot import commands as commands_mod
+        monkeypatch.setattr(
+            commands_mod.process,
+            "extract",
+            lambda q, c, scorer, limit: [(c[0], 40, 0)],
+        )
+
+        db = MagicMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                [],
+                [{"SKU": "ABC-123"}],
+            ]
+        )
+        strategy = FakeStrategy(
+            sql="SELECT * FROM Inventory",
+            args=[],
+            emoji="❔",
+            fuzzy_query_value=(
+                "SELECT * FROM Inventory",
+                [],
+                {"column": "SKU", "threshold": 80, "limit": 3},
+            ),
+            react_fuzzy_value="🤔",
+            respond_fuzzy_value=("Did you mean ABC-123?", True),
+        )
+        cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
+        ctx = make_context("sku XYZ")
+
+        await cmd.handle(ctx)
+
+        ctx.react.assert_awaited_once_with("❔")
+        ctx.reply.assert_not_awaited()
+
+    async def test_fuzzy_fetch_failure_is_contained(self):
+        db = MagicMock()
+        db.execute = AsyncMock(
+            side_effect=[[], Exception("Grist down")]
+        )
+        strategy = FakeStrategy(
+            sql="SELECT * FROM Inventory",
+            args=[],
+            emoji="❔",
+            fuzzy_query_value=(
+                "SELECT * FROM Inventory",
+                [],
+                {"column": "SKU", "threshold": 80, "limit": 3},
+            ),
+            react_fuzzy_value="🤔",
+            respond_fuzzy_value=("Did you mean ABC-123?", True),
+        )
+        cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
+        ctx = make_context("sku ABX")
+
+        await cmd.handle(ctx)
+
+        ctx.react.assert_awaited_once_with("❔")
+        ctx.reply.assert_not_awaited()
+
+    async def test_strategy_without_fuzzy_query_method_works(self):
+        """Old strategy with no fuzzy_query method → no AttributeError."""
+
+        class OldStrategy:
+            def query(self, _):
+                return ("SELECT * FROM T", [])
+
+            def react(self, _text, _rows):
+                return "❔"
+
+        db = make_db(rows=[])
+        cmd = ReactCommand(db=db, strategy=OldStrategy(), bot_uuid=BOT_UUID)
+        ctx = make_context("hello")
+
+        await cmd.handle(ctx)
+
+        ctx.react.assert_awaited_once_with("❔")
