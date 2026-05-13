@@ -1313,12 +1313,39 @@ class TestFuzzyQuery:
 
     def test_returns_select_star_for_matched_rule_table(self):
         s = self._strategy()
-        sql, args, cfg = s.fuzzy_query("sku ABC")
+        sql, args, cfg, fuzzy_input = s.fuzzy_query("sku ABC")
         assert sql == "SELECT * FROM Inventory"
         assert args == []
         assert cfg["column"] == "SKU"
         assert cfg["threshold"] == 80
         assert cfg["limit"] == 3
+        assert fuzzy_input == "ABC"  # captured by prefix matcher
+
+    def test_falls_back_to_full_text_when_matcher_did_not_capture(self):
+        """`any: true` matches but sets no {input}; use full text as fuzzy_input."""
+        s = make_strategy(
+            [
+                {
+                    "name": "t",
+                    "match": {"any": True},
+                    "query": {
+                        "table": "Inventory",
+                        "select": ["SKU"],
+                        "where": {"SKU": "{message}"},
+                    },
+                    "fuzzy": {
+                        "column": "SKU",
+                        "respond": {
+                            "text": "Did you mean:\n{candidates}",
+                            "item": "{SKU}",
+                        },
+                    },
+                    "react": {"emoji": "✅"},
+                }
+            ]
+        )
+        _, _, _, fuzzy_input = s.fuzzy_query("BBR8976")
+        assert fuzzy_input == "BBR8976"
 
     def test_returns_none_when_rule_has_no_fuzzy_block(self):
         s = make_strategy(

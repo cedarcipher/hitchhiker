@@ -4,9 +4,17 @@ import logging
 import time
 
 from signalbot import Command, Context
-from thefuzz import fuzz, process
+from rapidfuzz.distance import JaroWinkler
+from thefuzz import process
 
 from bot.db import GristClient
+
+
+def _fuzzy_scorer(query: str, candidate: str, **_) -> float:
+    """Jaro-Winkler similarity (0-100). Prefix-aware, well-suited to short
+    structured strings like SKUs/IDs where shared leading characters indicate
+    similarity better than scattered character overlap."""
+    return JaroWinkler.normalized_similarity(query, candidate) * 100
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +132,7 @@ class ReactCommand(Command):
         if not rows and hasattr(self.strategy, "fuzzy_query"):
             fuzzy_info = self.strategy.fuzzy_query(text)
             if fuzzy_info is not None:
-                fz_sql, fz_args, fz_cfg = fuzzy_info
+                fz_sql, fz_args, fz_cfg, fz_input = fuzzy_info
                 try:
                     all_rows = await self.db.execute(fz_sql, fz_args)
                 except Exception:
@@ -132,7 +140,7 @@ class ReactCommand(Command):
                         "Fuzzy fetch failed (details suppressed)"
                     )
                     all_rows = []
-                fuzzy_rows = self._rank_fuzzy(text, all_rows, fz_cfg)
+                fuzzy_rows = self._rank_fuzzy(fz_input, all_rows, fz_cfg)
 
         # 4. Pick the react/respond branch
         if fuzzy_rows:
@@ -197,7 +205,7 @@ class ReactCommand(Command):
         limit = cfg.get("limit", 3)
         choices = {i: r[column] for i, r in enumerate(rows) if r.get(column)}
         matches = process.extract(
-            query_text, choices, scorer=fuzz.WRatio, limit=limit
+            query_text, choices, scorer=_fuzzy_scorer, limit=limit
         )
         return [
             {**rows[idx], "score": score}
