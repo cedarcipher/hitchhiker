@@ -961,6 +961,330 @@ class TestMultiRuleFirstMatchWins:
         assert s.react("something else", []) == "❌"
 
 
+# --- Respond tests ---
+
+
+class TestRespondStatic:
+    def test_static_text_default_quote_true(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "welcome",
+                    "match": {"exact": "hi"},
+                    "respond": {"text": "Welcome!"},
+                }
+            ]
+        )
+        assert s.respond("hi", []) == ("Welcome!", True)
+
+    def test_explicit_quote_false(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "welcome",
+                    "match": {"exact": "hi"},
+                    "respond": {"text": "Welcome!", "quote": False},
+                }
+            ]
+        )
+        assert s.respond("hi", []) == ("Welcome!", False)
+
+    def test_no_respond_block_returns_none(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "welcome",
+                    "match": {"exact": "hi"},
+                    "react": {"emoji": "👋"},
+                }
+            ]
+        )
+        assert s.respond("hi", []) is None
+
+    def test_no_rule_matches_returns_none(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "welcome",
+                    "match": {"exact": "hi"},
+                    "respond": {"text": "Welcome!"},
+                }
+            ]
+        )
+        assert s.respond("bye", []) is None
+
+
+class TestRespondTemplating:
+    def test_interpolates_match_vars(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {"prefix": "order "},
+                    "respond": {"text": "You asked about {input}"},
+                }
+            ]
+        )
+        assert s.respond("order 42", []) == ("You asked about 42", True)
+
+    def test_interpolates_message_and_raw(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {"any": True},
+                    "respond": {"text": "raw={raw} msg={message}"},
+                }
+            ]
+        )
+        assert s.respond("  Hello  ", []) == ("raw=Hello msg=hello", True)
+
+    def test_interpolates_row_columns(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {"prefix": "order "},
+                    "query": {
+                        "table": "T",
+                        "select": ["status"],
+                        "where": {"id": "{input}"},
+                    },
+                    "respond": {"text": "Order {input}: {status}"},
+                }
+            ]
+        )
+        assert s.respond("order 42", [{"status": "shipped"}]) == (
+            "Order 42: shipped",
+            True,
+        )
+
+    def test_missing_placeholder_left_literal(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {"any": True},
+                    "respond": {"text": "Hello {nope}"},
+                }
+            ]
+        )
+        assert s.respond("anything", []) == ("Hello {nope}", True)
+
+    def test_row_column_overrides_match_var(self):
+        """When a row column name collides with a match var, the row wins."""
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {"prefix": "x "},
+                    "query": {
+                        "table": "T",
+                        "select": ["input"],
+                        "where": {"id": "{input}"},
+                    },
+                    "respond": {"text": "got: {input}"},
+                }
+            ]
+        )
+        assert s.respond("x foo", [{"input": "bar"}]) == ("got: bar", True)
+
+
+class TestRespondEmpty:
+    def test_empty_rows_uses_empty_template(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {"prefix": "order "},
+                    "query": {
+                        "table": "T",
+                        "select": ["status"],
+                        "where": {"id": "{input}"},
+                    },
+                    "respond": {
+                        "text": "Order {input}: {status}",
+                        "empty": "Order {input} not found.",
+                    },
+                }
+            ]
+        )
+        assert s.respond("order 42", []) == ("Order 42 not found.", True)
+
+    def test_empty_rows_no_empty_template_returns_none(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {"prefix": "order "},
+                    "query": {
+                        "table": "T",
+                        "select": ["status"],
+                        "where": {"id": "{input}"},
+                    },
+                    "respond": {"text": "Order {input}: {status}"},
+                }
+            ]
+        )
+        assert s.respond("order 42", []) is None
+
+    def test_empty_template_respects_quote_flag(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {"prefix": "order "},
+                    "query": {
+                        "table": "T",
+                        "select": ["status"],
+                        "where": {"id": "{input}"},
+                    },
+                    "respond": {
+                        "text": "ok",
+                        "empty": "not found",
+                        "quote": False,
+                    },
+                }
+            ]
+        )
+        assert s.respond("order 42", []) == ("not found", False)
+
+
+class TestRespondWhitespace:
+    def test_literal_unresolved_placeholder_not_blank(self):
+        """An unresolved `{input}` is not treated as blank — verifies that
+        the whitespace-skip refinement only catches truly empty text."""
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {"any": True},
+                    "respond": {"text": "{input}"},
+                }
+            ]
+        )
+        # `any` matches but doesn't set {input}; the literal stays.
+        assert s.respond("hello", []) == ("{input}", True)
+
+    def test_pure_whitespace_text_returns_none(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {"any": True},
+                    "respond": {"text": "   "},
+                }
+            ]
+        )
+        assert s.respond("hello", []) is None
+
+    def test_empty_text_returns_none(self):
+        s = make_strategy(
+            [
+                {
+                    "name": "test",
+                    "match": {"any": True},
+                    "respond": {"text": ""},
+                }
+            ]
+        )
+        assert s.respond("hello", []) is None
+
+
+class TestRespondValidation:
+    def test_rejects_non_dict_respond(self):
+        with pytest.raises(ValueError, match="respond must be a dict"):
+            make_strategy(
+                [
+                    {
+                        "name": "t",
+                        "match": {"any": True},
+                        "respond": "Welcome!",
+                    }
+                ]
+            )
+
+    def test_rejects_missing_text(self):
+        with pytest.raises(ValueError, match="respond.text is required"):
+            make_strategy(
+                [
+                    {
+                        "name": "t",
+                        "match": {"any": True},
+                        "respond": {"quote": True},
+                    }
+                ]
+            )
+
+    def test_rejects_non_string_text(self):
+        with pytest.raises(ValueError, match="respond.text must be a string"):
+            make_strategy(
+                [
+                    {
+                        "name": "t",
+                        "match": {"any": True},
+                        "respond": {"text": 42},
+                    }
+                ]
+            )
+
+    def test_rejects_non_string_empty(self):
+        with pytest.raises(ValueError, match="respond.empty must be a string"):
+            make_strategy(
+                [
+                    {
+                        "name": "t",
+                        "match": {"any": True},
+                        "respond": {"text": "x", "empty": 0},
+                    }
+                ]
+            )
+
+    def test_rejects_non_bool_quote(self):
+        with pytest.raises(ValueError, match="respond.quote must be a bool"):
+            make_strategy(
+                [
+                    {
+                        "name": "t",
+                        "match": {"any": True},
+                        "respond": {"text": "x", "quote": "yes"},
+                    }
+                ]
+            )
+
+    def test_rejects_unknown_key(self):
+        with pytest.raises(ValueError, match="respond has unknown key 'foo'"):
+            make_strategy(
+                [
+                    {
+                        "name": "t",
+                        "match": {"any": True},
+                        "respond": {"text": "x", "foo": 1},
+                    }
+                ]
+            )
+
+    def test_accepts_rule_without_respond(self):
+        make_strategy(
+            [{"name": "t", "match": {"any": True}, "react": {"emoji": "✅"}}]
+        )
+
+    def test_accepts_valid_respond(self):
+        make_strategy(
+            [
+                {
+                    "name": "t",
+                    "match": {"any": True},
+                    "respond": {
+                        "text": "hi",
+                        "empty": "no",
+                        "quote": False,
+                    },
+                }
+            ]
+        )
+
+
 # --- YAML file loading tests ---
 
 

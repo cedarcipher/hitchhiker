@@ -10,12 +10,14 @@ class YamlStrategy:
 
     _LEAF_KEYS = ("prefix", "suffix", "exact", "contains", "regex", "any")
     _MATCH_KEYS = ("any_of", "all_of") + _LEAF_KEYS
+    _RESPOND_KEYS = ("text", "empty", "quote")
 
     def __init__(self, config: dict) -> None:
         self.rules = config.get("rules", [])
         self.tables = config.get("tables", {})
         for rule in self.rules:
             self._validate_match(rule.get("match", {}))
+            self._validate_respond(rule.get("respond"))
 
     @classmethod
     def _validate_match(cls, match_def: dict) -> None:
@@ -33,6 +35,24 @@ class YamlStrategy:
                 )
             for sub in items:
                 cls._validate_match(sub)
+
+    @classmethod
+    def _validate_respond(cls, respond_def) -> None:
+        if respond_def is None:
+            return
+        if not isinstance(respond_def, dict):
+            raise ValueError("respond must be a dict")
+        if "text" not in respond_def:
+            raise ValueError("respond.text is required")
+        if not isinstance(respond_def["text"], str):
+            raise ValueError("respond.text must be a string")
+        if "empty" in respond_def and not isinstance(respond_def["empty"], str):
+            raise ValueError("respond.empty must be a string")
+        if "quote" in respond_def and not isinstance(respond_def["quote"], bool):
+            raise ValueError("respond.quote must be a bool")
+        for key in respond_def:
+            if key not in cls._RESPOND_KEYS:
+                raise ValueError(f"respond has unknown key '{key}'")
 
     @classmethod
     def from_file(cls, path: str) -> "YamlStrategy":
@@ -66,6 +86,39 @@ class YamlStrategy:
                 return None
 
             return self._evaluate_react(react_def, rows)
+
+        return None
+
+    def respond(
+        self, message_text: str, rows: list[dict]
+    ) -> tuple[str, bool] | None:
+        """Return (text, quote) for a text reply, or None for no reply."""
+        text = message_text.strip()
+        for rule in self.rules:
+            variables = self._match(rule.get("match", {}), text)
+            if variables is None:
+                continue
+
+            respond_def = rule.get("respond")
+            if not respond_def:
+                return None
+
+            quote = respond_def.get("quote", True)
+            has_query = bool(rule.get("query"))
+
+            if has_query and not rows:
+                empty = respond_def.get("empty")
+                if empty is None:
+                    return None
+                rendered = self._interpolate(empty, variables)
+            else:
+                row_vars = rows[0] if rows else {}
+                merged = {**variables, **row_vars}
+                rendered = self._interpolate(respond_def["text"], merged)
+
+            if not rendered.strip():
+                return None
+            return (rendered, quote)
 
         return None
 
