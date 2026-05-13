@@ -229,7 +229,7 @@ attack surface.
 - Use read-only root filesystems where possible (`read_only: true` in compose)
 - Keep base images updated — pin to specific versions and rebuild regularly
 - Enable Docker's seccomp and AppArmor profiles (default in modern Docker)
-- Minimize installed packages in the bot Dockerfile (already using `python:3.13-slim`)
+- Minimize installed packages in the bot Dockerfile (already using `python:3.14-slim`)
 
 ### T8 — Logging sensitive data
 

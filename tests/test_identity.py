@@ -1,5 +1,6 @@
 """Tests for SignalIdentityClient — error detection + trust API."""
 
+import httpx
 import pytest
 
 from bot.identity import SignalIdentityClient
@@ -44,15 +45,7 @@ class TestIsUntrustedError:
         assert client.is_untrusted_error(Exception(error_text)) is False
 
 
-import asyncio
-
-import httpx
-
-
 class TestTrust:
-    def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
-
     def _build_client(self, handler):
         """Build a SignalIdentityClient backed by an httpx MockTransport."""
         client = SignalIdentityClient(
@@ -62,7 +55,7 @@ class TestTrust:
         client._transport = httpx.MockTransport(handler)
         return client
 
-    def test_trust_puts_to_correct_url_with_correct_body(self):
+    async def test_trust_puts_to_correct_url_with_correct_body(self):
         captured = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -72,7 +65,7 @@ class TestTrust:
             return httpx.Response(200, json={})
 
         client = self._build_client(handler)
-        self._run(client.trust("c29e0455-d7bd-423c-ffff-eeeeeeeeeeee"))
+        await client.trust("c29e0455-d7bd-423c-ffff-eeeeeeeeeeee")
 
         assert captured["method"] == "PUT"
         assert captured["url"] == (
@@ -81,10 +74,10 @@ class TestTrust:
         )
         assert captured["body"] == b'{"trust_all_known_keys": true}'
 
-    def test_trust_raises_on_4xx(self):
+    async def test_trust_raises_on_4xx(self):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(404, json={"error": "Identity not found"})
 
         client = self._build_client(handler)
         with pytest.raises(httpx.HTTPStatusError):
-            self._run(client.trust("missing-uuid"))
+            await client.trust("missing-uuid")

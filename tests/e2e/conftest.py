@@ -1,10 +1,8 @@
 """E2E test fixtures — real components wired to stub servers."""
 
-import asyncio
-
 import pytest
+import pytest_asyncio
 
-from bot.commands import RateLimiter, ReactCommand
 from bot.db import GristClient
 from bot.yaml_strategy import YamlStrategy
 
@@ -21,29 +19,20 @@ SENDER_NUMBER = "+15551234567"
 # --- Stub fixtures ---
 
 
-@pytest.fixture(autouse=True)
-def _event_loop():
-    """Create and set an explicit event loop for each test."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    yield loop
-    loop.close()
-
-
-@pytest.fixture()
-def grist_stub(_event_loop):
+@pytest_asyncio.fixture()
+async def grist_stub():
     """Start and stop a Grist stub server for the duration of a test."""
     stub = GristStub()
-    _event_loop.run_until_complete(stub.start())
+    await stub.start()
     yield stub
-    _event_loop.run_until_complete(stub.stop())
+    await stub.stop()
 
 
 # --- Component fixtures ---
 
 
-@pytest.fixture()
-def grist_client(grist_stub, _event_loop):
+@pytest_asyncio.fixture()
+async def grist_client(grist_stub):
     """A real GristClient pointed at the stub server."""
     client = GristClient(
         api_url=grist_stub.base_url,
@@ -51,7 +40,7 @@ def grist_client(grist_stub, _event_loop):
         doc_id="test-doc-id",
     )
     yield client
-    _event_loop.run_until_complete(client.close())
+    await client.close()
 
 
 @pytest.fixture()
@@ -71,9 +60,9 @@ def stock_strategy():
                     "react": {
                         "map": {
                             "column": "in_stock",
-                            "values": {"1": "\u2705", "0": "\U0001F6AB"},
+                            "values": {"1": "✅", "0": "\U0001F6AB"},
                         },
-                        "empty": "\u2753",
+                        "empty": "❓",
                     },
                 }
             ]
@@ -100,12 +89,12 @@ def order_strategy():
                             "column": "status",
                             "values": {
                                 "shipped": "\U0001F4E6",
-                                "delivered": "\u2705",
-                                "cancelled": "\u274C",
+                                "delivered": "✅",
+                                "cancelled": "❌",
                             },
-                            "default": "\u23F3",
+                            "default": "⏳",
                         },
-                        "empty": "\u2753",
+                        "empty": "❓",
                     },
                 }
             ]

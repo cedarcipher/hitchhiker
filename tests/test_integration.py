@@ -5,7 +5,6 @@ These tests load actual example strategy files and simulate the full pipeline
 verify that documented behavior matches the implementation.
 """
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -122,26 +121,26 @@ class TestStockCheckScenario:
         emoji = strategy.react("hello world", [])
         assert emoji is None
 
-    def test_full_pipeline_in_stock(self, strategy):
+    async def test_full_pipeline_in_stock(self, strategy):
         """End-to-end: stock check with mocked DB returns ✅."""
         db = make_db(rows=[{"in_stock": 1}])
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("stock Bandages")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         db.execute.assert_awaited_once_with(
             "SELECT in_stock FROM Products WHERE LOWER(name) = ?", ["bandages"]
         )
         ctx.react.assert_awaited_once_with("\u2705")
 
-    def test_full_pipeline_not_found(self, strategy):
+    async def test_full_pipeline_not_found(self, strategy):
         """End-to-end: stock check with empty DB returns ❓."""
         db = make_db(rows=[])
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("stock Widgets")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_awaited_once_with("\u2753")
 
@@ -200,13 +199,13 @@ class TestOrderStatusYaml:
         sql, args = strategy.query("ORDER ABC")
         assert args == ["abc"]
 
-    def test_full_pipeline_shipped(self, strategy):
+    async def test_full_pipeline_shipped(self, strategy):
         """End-to-end: order lookup returns 📦 for shipped."""
         db = make_db(rows=[{"status": "shipped"}])
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("order X123")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         db.execute.assert_awaited_once()
         ctx.react.assert_awaited_once_with("\U0001F4E6")
@@ -261,13 +260,13 @@ class TestOrderStatusPython:
         sql, args = strategy.query("Order ABC")
         assert args == ["abc"]
 
-    def test_full_pipeline_delivered(self, strategy):
+    async def test_full_pipeline_delivered(self, strategy):
         """End-to-end: Python strategy order lookup returns ✅ for delivered."""
         db = make_db(rows=[{"status": "delivered"}])
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("order Z999")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_awaited_once_with("\u2705")
 
@@ -317,26 +316,26 @@ class TestKeywordAllowlistYaml:
         emoji = strategy.react("unknown", [])
         assert emoji is None
 
-    def test_full_pipeline_found(self, strategy):
+    async def test_full_pipeline_found(self, strategy):
         """End-to-end: keyword found in DB → react with emoji from column."""
         db = make_db(rows=[{"emoji": "\U0001F44B"}])
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("hello")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         db.execute.assert_awaited_once_with(
             "SELECT emoji FROM Allowlist WHERE LOWER(word) = ?", ["hello"]
         )
         ctx.react.assert_awaited_once_with("\U0001F44B")
 
-    def test_full_pipeline_not_found(self, strategy):
+    async def test_full_pipeline_not_found(self, strategy):
         """End-to-end: keyword not in DB → no reaction."""
         db = make_db(rows=[])
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("unknown")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_not_awaited()
 
@@ -427,46 +426,46 @@ class TestMultiRuleStrategy:
         emoji = strategy.react("ping", [])
         assert emoji == "\U0001F3D3"
 
-    def test_full_pipeline_ping(self, strategy):
+    async def test_full_pipeline_ping(self, strategy):
         """End-to-end: ping → 🏓 without hitting the database."""
         db = make_db()
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("ping")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         db.execute.assert_not_awaited()
         ctx.react.assert_awaited_once_with("\U0001F3D3")
 
-    def test_full_pipeline_order(self, strategy):
+    async def test_full_pipeline_order(self, strategy):
         """End-to-end: order lookup queries DB and maps status → emoji."""
         db = make_db(rows=[{"status": "delivered"}])
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("order Z1")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         db.execute.assert_awaited_once()
         ctx.react.assert_awaited_once_with("\u2705")
 
-    def test_full_pipeline_fallback(self, strategy):
+    async def test_full_pipeline_fallback(self, strategy):
         """End-to-end: fallback → Allowlist query → column emoji."""
         db = make_db(rows=[{"emoji": "\u2764\uFE0F"}])
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("thanks")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         db.execute.assert_awaited_once()
         ctx.react.assert_awaited_once_with("\u2764\uFE0F")
 
-    def test_full_pipeline_fallback_no_match_in_db(self, strategy):
+    async def test_full_pipeline_fallback_no_match_in_db(self, strategy):
         """End-to-end: fallback → Allowlist empty → no reaction."""
         db = make_db(rows=[])
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("random gibberish")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         db.execute.assert_awaited_once()
         ctx.react.assert_not_awaited()
@@ -547,7 +546,7 @@ class TestYamlPythonConsistency:
 class TestPipelineErrorHandling:
     """Validate that the pipeline handles errors gracefully as documented."""
 
-    def test_db_error_suppresses_reaction(self):
+    async def test_db_error_suppresses_reaction(self):
         """Grist query failure → no reaction, no crash."""
         strategy = YamlStrategy(
             {
@@ -577,10 +576,10 @@ class TestPipelineErrorHandling:
         ctx = make_context("stock Bandages")
 
         # Should not raise
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
         ctx.react.assert_not_awaited()
 
-    def test_empty_message_skips(self):
+    async def test_empty_message_skips(self):
         """Empty messages are ignored — no query, no reaction."""
         strategy = YamlStrategy(
             {
@@ -597,10 +596,10 @@ class TestPipelineErrorHandling:
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
         ctx.react.assert_not_awaited()
 
-    def test_none_message_skips(self):
+    async def test_none_message_skips(self):
         """None messages are ignored."""
         strategy = YamlStrategy(
             {
@@ -617,7 +616,7 @@ class TestPipelineErrorHandling:
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context(None)
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
         ctx.react.assert_not_awaited()
 
 
@@ -682,13 +681,13 @@ class Strategy:
         assert sql == ""
         assert args == []
 
-    def test_full_pipeline_found(self, strategy):
+    async def test_full_pipeline_found(self, strategy):
         """End-to-end: expertise found → 👍."""
         db = make_db(rows=[{"person": "Alice"}])
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("can Alice help with python")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         db.execute.assert_awaited_once_with(
             "SELECT person FROM Experts WHERE person = ? AND topic = ?",
@@ -696,12 +695,12 @@ class Strategy:
         )
         ctx.react.assert_awaited_once_with("\U0001F44D")
 
-    def test_full_pipeline_not_found(self, strategy):
+    async def test_full_pipeline_not_found(self, strategy):
         """End-to-end: expertise not found → 👎."""
         db = make_db(rows=[])
         cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
         ctx = make_context("can Bob help with rust")
 
-        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.react.assert_awaited_once_with("\U0001F44E")

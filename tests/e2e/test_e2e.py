@@ -14,7 +14,6 @@ Value over existing unit/integration tests:
   - httpx error paths are tested with real HTTP error responses
 """
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -64,11 +63,6 @@ def _make_context(message):
     return Context(bot, message)
 
 
-def _run(coro):
-    """Run an async coroutine in the current event loop."""
-    return asyncio.get_event_loop().run_until_complete(coro)
-
-
 # =============================================================================
 # Stock check — full pipeline with real HTTP
 # =============================================================================
@@ -77,7 +71,7 @@ def _run(coro):
 class TestStockCheckE2E:
     """End-to-end: message -> strategy -> real HTTP to Grist stub -> reaction."""
 
-    def test_stock_in_stock_reacts_check(self, grist_stub, grist_client, stock_strategy):
+    async def test_stock_in_stock_reacts_check(self, grist_stub, grist_client, stock_strategy):
         """'stock Bandages' with in_stock=1 -> reacts with checkmark."""
         grist_stub.set_response(STOCK_SQL, [{"in_stock": 1}])
 
@@ -87,9 +81,9 @@ class TestStockCheckE2E:
         msg = _make_message("stock Bandages")
         ctx = _make_context(msg)
 
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
-        ctx.bot.react.assert_awaited_once_with(msg, "\u2705")
+        ctx.bot.react.assert_awaited_once_with(msg, "✅")
 
         # Verify the SQL query sent over HTTP
         assert len(grist_stub.captured_queries) == 1
@@ -97,7 +91,7 @@ class TestStockCheckE2E:
         assert q.sql == STOCK_SQL
         assert q.args == ["bandages"]
 
-    def test_stock_out_of_stock_reacts_prohibited(
+    async def test_stock_out_of_stock_reacts_prohibited(
         self, grist_stub, grist_client, stock_strategy
     ):
         """'stock Unobtanium' with in_stock=0 -> reacts with prohibited sign."""
@@ -109,13 +103,13 @@ class TestStockCheckE2E:
         msg = _make_message("stock Unobtanium")
         ctx = _make_context(msg)
 
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.bot.react.assert_awaited_once_with(msg, "\U0001F6AB")
         q = grist_stub.captured_queries[0]
         assert q.args == ["unobtanium"]
 
-    def test_stock_not_found_reacts_question(
+    async def test_stock_not_found_reacts_question(
         self, grist_stub, grist_client, stock_strategy
     ):
         """'stock Widgets' with no rows -> reacts with question mark."""
@@ -127,11 +121,11 @@ class TestStockCheckE2E:
         msg = _make_message("stock Widgets")
         ctx = _make_context(msg)
 
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
-        ctx.bot.react.assert_awaited_once_with(msg, "\u2753")
+        ctx.bot.react.assert_awaited_once_with(msg, "❓")
 
-    def test_unmatched_message_no_query(
+    async def test_unmatched_message_no_query(
         self, grist_stub, grist_client, stock_strategy
     ):
         """A message that doesn't match any rule sends no query."""
@@ -141,7 +135,7 @@ class TestStockCheckE2E:
         msg = _make_message("hello world")
         ctx = _make_context(msg)
 
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         assert len(grist_stub.captured_queries) == 0
         ctx.bot.react.assert_not_awaited()
@@ -153,7 +147,7 @@ class TestStockCheckE2E:
 
 
 class TestOrderStatusE2E:
-    def test_order_shipped(self, grist_stub, grist_client, order_strategy):
+    async def test_order_shipped(self, grist_stub, grist_client, order_strategy):
         grist_stub.set_response(ORDER_SQL, [{"status": "shipped"}])
 
         cmd = ReactCommand(
@@ -162,12 +156,12 @@ class TestOrderStatusE2E:
         msg = _make_message("order 12345")
         ctx = _make_context(msg)
 
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.bot.react.assert_awaited_once_with(msg, "\U0001F4E6")
         assert grist_stub.captured_queries[0].args == ["12345"]  # already lowercase
 
-    def test_order_not_found(self, grist_stub, grist_client, order_strategy):
+    async def test_order_not_found(self, grist_stub, grist_client, order_strategy):
         grist_stub.set_response(ORDER_SQL, [])
 
         cmd = ReactCommand(
@@ -176,9 +170,9 @@ class TestOrderStatusE2E:
         msg = _make_message("order 99999")
         ctx = _make_context(msg)
 
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
-        ctx.bot.react.assert_awaited_once_with(msg, "\u2753")
+        ctx.bot.react.assert_awaited_once_with(msg, "❓")
 
 
 # =============================================================================
@@ -187,7 +181,7 @@ class TestOrderStatusE2E:
 
 
 class TestGroupMentionE2E:
-    def test_mentioned_in_group_processes(
+    async def test_mentioned_in_group_processes(
         self, grist_stub, grist_client, stock_strategy
     ):
         """Bot is @-mentioned in a group -> message is processed."""
@@ -197,19 +191,19 @@ class TestGroupMentionE2E:
             db=grist_client, strategy=stock_strategy, bot_uuid=BOT_UUID
         )
         msg = _make_message(
-            "\uFFFC stock Bandages",
+            "￼ stock Bandages",
             group="group.TestGroupId12345678901234567890123456789012345678901234567=",
             mentions=[{"uuid": BOT_UUID, "start": 0, "length": 1}],
         )
         ctx = _make_context(msg)
 
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
-        ctx.bot.react.assert_awaited_once_with(msg, "\u2705")
+        ctx.bot.react.assert_awaited_once_with(msg, "✅")
         # Verify the placeholder was stripped before querying
         assert grist_stub.captured_queries[0].args == ["bandages"]
 
-    def test_not_mentioned_in_group_ignored(
+    async def test_not_mentioned_in_group_ignored(
         self, grist_stub, grist_client, stock_strategy
     ):
         """No @-mention in group -> message ignored, no Grist query."""
@@ -223,12 +217,12 @@ class TestGroupMentionE2E:
         )
         ctx = _make_context(msg)
 
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         assert len(grist_stub.captured_queries) == 0
         ctx.bot.react.assert_not_awaited()
 
-    def test_someone_else_mentioned_ignored(
+    async def test_someone_else_mentioned_ignored(
         self, grist_stub, grist_client, stock_strategy
     ):
         """A different user @-mentioned in group -> ignored."""
@@ -236,13 +230,13 @@ class TestGroupMentionE2E:
             db=grist_client, strategy=stock_strategy, bot_uuid=BOT_UUID
         )
         msg = _make_message(
-            "\uFFFC stock Bandages",
+            "￼ stock Bandages",
             group="group.TestGroupId12345678901234567890123456789012345678901234567=",
             mentions=[{"uuid": "other-user-uuid", "start": 0, "length": 1}],
         )
         ctx = _make_context(msg)
 
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         assert len(grist_stub.captured_queries) == 0
         ctx.bot.react.assert_not_awaited()
@@ -254,7 +248,7 @@ class TestGroupMentionE2E:
 
 
 class TestRateLimitE2E:
-    def test_rate_limited_sender_dropped(
+    async def test_rate_limited_sender_dropped(
         self, grist_stub, grist_client, stock_strategy
     ):
         """After exceeding the limit, messages are silently dropped."""
@@ -272,18 +266,18 @@ class TestRateLimitE2E:
         for i in range(2):
             msg = _make_message("stock Bandages", timestamp=1700000000000 + i)
             ctx = _make_context(msg)
-            _run(cmd.handle(ctx))
+            await cmd.handle(ctx)
             ctx.bot.react.assert_awaited_once()
 
         # Third message is rate-limited — no query, no reaction
         grist_stub.captured_queries.clear()
         msg = _make_message("stock Bandages", timestamp=1700000000002)
         ctx = _make_context(msg)
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
         ctx.bot.react.assert_not_awaited()
         assert len(grist_stub.captured_queries) == 0
 
-    def test_different_senders_independent(
+    async def test_different_senders_independent(
         self, grist_stub, grist_client, stock_strategy
     ):
         """Rate limits are per-sender — one sender's limit doesn't block another."""
@@ -300,19 +294,19 @@ class TestRateLimitE2E:
         # sender-1 uses their allowance
         msg1 = _make_message("stock Bandages", source_uuid="sender-1")
         ctx1 = _make_context(msg1)
-        _run(cmd.handle(ctx1))
+        await cmd.handle(ctx1)
         ctx1.bot.react.assert_awaited_once()
 
         # sender-2 is unaffected
         msg2 = _make_message("stock Bandages", source_uuid="sender-2")
         ctx2 = _make_context(msg2)
-        _run(cmd.handle(ctx2))
+        await cmd.handle(ctx2)
         ctx2.bot.react.assert_awaited_once()
 
         # sender-1 is blocked
         msg3 = _make_message("stock Bandages", source_uuid="sender-1")
         ctx3 = _make_context(msg3)
-        _run(cmd.handle(ctx3))
+        await cmd.handle(ctx3)
         ctx3.bot.react.assert_not_awaited()
 
 
@@ -322,7 +316,7 @@ class TestRateLimitE2E:
 
 
 class TestGristErrorE2E:
-    def test_grist_500_does_not_crash(
+    async def test_grist_500_does_not_crash(
         self, grist_stub, grist_client, stock_strategy
     ):
         """A Grist HTTP 500 is handled gracefully — no reaction, no crash."""
@@ -334,13 +328,13 @@ class TestGristErrorE2E:
         msg = _make_message("stock Bandages")
         ctx = _make_context(msg)
 
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         ctx.bot.react.assert_not_awaited()
         # The query was still sent (and rejected by the stub)
         assert len(grist_stub.captured_queries) == 1
 
-    def test_grist_recovers_after_error(
+    async def test_grist_recovers_after_error(
         self, grist_stub, grist_client, stock_strategy
     ):
         """After a Grist error, subsequent requests still work."""
@@ -351,7 +345,7 @@ class TestGristErrorE2E:
         )
         msg1 = _make_message("stock Bandages")
         ctx1 = _make_context(msg1)
-        _run(cmd.handle(ctx1))
+        await cmd.handle(ctx1)
         ctx1.bot.react.assert_not_awaited()
 
         # Remove error, set normal response
@@ -360,8 +354,8 @@ class TestGristErrorE2E:
 
         msg2 = _make_message("stock Bandages")
         ctx2 = _make_context(msg2)
-        _run(cmd.handle(ctx2))
-        ctx2.bot.react.assert_awaited_once_with(msg2, "\u2705")
+        await cmd.handle(ctx2)
+        ctx2.bot.react.assert_awaited_once_with(msg2, "✅")
 
 
 # =============================================================================
@@ -370,31 +364,31 @@ class TestGristErrorE2E:
 
 
 class TestEdgeCasesE2E:
-    def test_empty_message_no_query(self, grist_stub, grist_client, stock_strategy):
+    async def test_empty_message_no_query(self, grist_stub, grist_client, stock_strategy):
         cmd = ReactCommand(
             db=grist_client, strategy=stock_strategy, bot_uuid=BOT_UUID
         )
         msg = _make_message("")
         ctx = _make_context(msg)
 
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         assert len(grist_stub.captured_queries) == 0
         ctx.bot.react.assert_not_awaited()
 
-    def test_none_message_no_query(self, grist_stub, grist_client, stock_strategy):
+    async def test_none_message_no_query(self, grist_stub, grist_client, stock_strategy):
         cmd = ReactCommand(
             db=grist_client, strategy=stock_strategy, bot_uuid=BOT_UUID
         )
         msg = _make_message(None)
         ctx = _make_context(msg)
 
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         assert len(grist_stub.captured_queries) == 0
         ctx.bot.react.assert_not_awaited()
 
-    def test_mention_only_placeholder_no_query(
+    async def test_mention_only_placeholder_no_query(
         self, grist_stub, grist_client, stock_strategy
     ):
         """A group message with only the mention placeholder and no text."""
@@ -402,13 +396,13 @@ class TestEdgeCasesE2E:
             db=grist_client, strategy=stock_strategy, bot_uuid=BOT_UUID
         )
         msg = _make_message(
-            "\uFFFC",
+            "￼",
             group="group.TestGroupId12345678901234567890123456789012345678901234567=",
             mentions=[{"uuid": BOT_UUID, "start": 0, "length": 1}],
         )
         ctx = _make_context(msg)
 
-        _run(cmd.handle(ctx))
+        await cmd.handle(ctx)
 
         assert len(grist_stub.captured_queries) == 0
         ctx.bot.react.assert_not_awaited()
