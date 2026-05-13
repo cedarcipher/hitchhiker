@@ -1,9 +1,12 @@
 """Tests for the ReactCommand handler with mocked dependencies."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
+
+import pytest
 
 from bot.commands import RateLimiter, ReactCommand
+from bot.identity import SignalIdentityClient
 
 
 # --- Constants ---
@@ -359,3 +362,116 @@ class TestRateLimitIntegration:
         )
         asyncio.get_event_loop().run_until_complete(cmd.handle(ctx2))
         ctx2.react.assert_awaited_once_with("🏓")
+
+
+class TestAutoRetrust:
+    """Tests for auto re-trust when a react fails due to untrusted identity."""
+
+    def _make_identity(self):
+        """A fake identity client with stubbable async methods."""
+        identity = MagicMock(spec=SignalIdentityClient)
+        identity.is_untrusted_error = MagicMock(return_value=False)
+        identity.trust = AsyncMock()
+        return identity
+
+    def test_normal_react_does_not_call_trust(self):
+        identity = self._make_identity()
+        db = make_db()
+        strategy = FakeStrategy(emoji="🏓")
+        cmd = ReactCommand(
+            db=db, strategy=strategy, bot_uuid=BOT_UUID,
+            identity_client=identity,
+        )
+        ctx = make_context("ping")
+
+        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+
+        ctx.react.assert_awaited_once_with("🏓")
+        identity.trust.assert_not_awaited()
+
+    def test_untrusted_react_triggers_trust_and_retry(self):
+        identity = self._make_identity()
+        identity.is_untrusted_error.return_value = True
+        db = make_db()
+        strategy = FakeStrategy(emoji="🏓")
+        cmd = ReactCommand(
+            db=db, strategy=strategy, bot_uuid=BOT_UUID,
+            identity_client=identity,
+        )
+        ctx = make_context("ping", source_uuid="sender-X")
+        ctx.react = AsyncMock(
+            side_effect=[Exception("Untrusted Identity for sender-X"), None]
+        )
+
+        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+
+        identity.trust.assert_awaited_once_with("sender-X")
+        assert ctx.react.await_count == 2
+        ctx.react.assert_has_awaits([call("🏓"), call("🏓")])
+
+    def test_trust_failure_is_contained(self):
+        identity = self._make_identity()
+        identity.is_untrusted_error.return_value = True
+        identity.trust = AsyncMock(side_effect=Exception("network down"))
+        db = make_db()
+        strategy = FakeStrategy(emoji="🏓")
+        cmd = ReactCommand(
+            db=db, strategy=strategy, bot_uuid=BOT_UUID,
+            identity_client=identity,
+        )
+        ctx = make_context("ping")
+        ctx.react = AsyncMock(side_effect=Exception("Untrusted Identity for x"))
+
+        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+
+        identity.trust.assert_awaited_once()
+        assert ctx.react.await_count == 1
+
+    def test_retry_failure_is_contained(self):
+        identity = self._make_identity()
+        identity.is_untrusted_error.return_value = True
+        db = make_db()
+        strategy = FakeStrategy(emoji="🏓")
+        cmd = ReactCommand(
+            db=db, strategy=strategy, bot_uuid=BOT_UUID,
+            identity_client=identity,
+        )
+        ctx = make_context("ping")
+        ctx.react = AsyncMock(
+            side_effect=[
+                Exception("Untrusted Identity for x"),
+                Exception("Untrusted Identity for x"),
+            ]
+        )
+
+        asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+
+        identity.trust.assert_awaited_once()
+        assert ctx.react.await_count == 2
+
+    def test_unrelated_react_failure_propagates(self):
+        identity = self._make_identity()
+        identity.is_untrusted_error.return_value = False
+        db = make_db()
+        strategy = FakeStrategy(emoji="🏓")
+        cmd = ReactCommand(
+            db=db, strategy=strategy, bot_uuid=BOT_UUID,
+            identity_client=identity,
+        )
+        ctx = make_context("ping")
+        ctx.react = AsyncMock(side_effect=RuntimeError("unrelated"))
+
+        with pytest.raises(RuntimeError, match="unrelated"):
+            asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
+
+        identity.trust.assert_not_awaited()
+
+    def test_without_identity_client_failure_propagates(self):
+        db = make_db()
+        strategy = FakeStrategy(emoji="🏓")
+        cmd = ReactCommand(db=db, strategy=strategy, bot_uuid=BOT_UUID)
+        ctx = make_context("ping")
+        ctx.react = AsyncMock(side_effect=Exception("Untrusted Identity for x"))
+
+        with pytest.raises(Exception, match="Untrusted Identity"):
+            asyncio.get_event_loop().run_until_complete(cmd.handle(ctx))
