@@ -449,6 +449,13 @@ message that matches a strategy rule triggers a database query and emoji respons
   query volume per sender (see T5)
 - Monitor for unusual message patterns (high volume from a single sender, systematic
   input sequences) — though this must be done without logging message content
+- **Operator-accepted bypass**: the bot auto-trusts senders whose Signal safety
+  number has changed (see `src/bot/identity.py`). This restores message delivery
+  without operator intervention, but means a SIM-swap or device-takeover attacker
+  who re-registers an existing group member's number will be silently re-trusted
+  by the bot on their first message. Operators relying on safety-number-change
+  as a detection signal should remove the `identity_client` injection in
+  `src/bot/main.py`.
 
 ### T18 — Admin account compromise and abuse of Grist privileges
 

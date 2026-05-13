@@ -52,12 +52,14 @@ class ReactCommand(Command):
         strategy,
         bot_uuid: str,
         rate_limiter: RateLimiter | None = None,
+        identity_client=None,
     ) -> None:
         super().__init__()
         self.db = db
         self.strategy = strategy
         self.bot_uuid = bot_uuid
         self.rate_limiter = rate_limiter
+        self.identity_client = identity_client
 
     def _is_mentioned(self, c: Context) -> bool:
         """Check if the bot is @-mentioned in the message.
@@ -121,5 +123,25 @@ class ReactCommand(Command):
         if emoji is None:
             return  # strategy chose not to react
 
-        # 4. React on the original message
-        await c.react(emoji)
+        # 4. React on the original message (with auto-trust retry on
+        #    "Untrusted Identity" failures — safety-number-changed senders)
+        await self._react_with_trust_retry(c, emoji)
+
+    async def _react_with_trust_retry(self, c: Context, emoji: str) -> None:
+        """React on c.message; on untrusted-identity failure, trust the
+        sender's UUID and retry exactly once. Unrelated failures propagate."""
+        try:
+            await c.react(emoji)
+        except Exception as exc:
+            if self.identity_client and self.identity_client.is_untrusted_error(exc):
+                try:
+                    await self.identity_client.trust(c.message.source_uuid)
+                    await c.react(emoji)
+                except Exception:
+                    logger.warning(
+                        "Auto-trust retry failed (details suppressed)"
+                    )
+                else:
+                    logger.info("Auto-trusted sender after react failure")
+                return
+            raise

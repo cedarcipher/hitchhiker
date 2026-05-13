@@ -9,6 +9,7 @@ from signalbot import SignalBot
 from bot.commands import RateLimiter, ReactCommand
 from bot.config import settings
 from bot.db import GristClient
+from bot.identity import SignalIdentityClient
 from bot.loader import load_strategy
 
 
@@ -139,12 +140,21 @@ def main():
         settings.RATE_LIMIT_WINDOW,
     )
 
+    identity_client = SignalIdentityClient(
+        signal_service_url=settings.SIGNAL_SERVICE_URL,
+        phone_number=settings.SIGNAL_PHONE_NUMBER,
+    )
+    log.info(
+        "Auto re-trust enabled — untrusted identities will be trusted on react failure"
+    )
+
     bot.register(
         ReactCommand(
             db=db,
             strategy=strategy,
             bot_uuid=bot_uuid,
             rate_limiter=rate_limiter,
+            identity_client=identity_client,
         )
     )
 
