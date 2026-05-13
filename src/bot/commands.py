@@ -208,7 +208,7 @@ class ReactCommand(Command):
             query_text, choices, scorer=_fuzzy_scorer, limit=limit
         )
         return [
-            {**rows[idx], "score": score}
+            {**rows[idx], "score": round(score, 1)}
             for _value, score, idx in matches
             if score >= threshold
         ]
